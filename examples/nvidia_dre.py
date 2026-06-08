@@ -205,27 +205,58 @@ def to_flows(df: pd.DataFrame) -> pd.DataFrame:
         quarter  - fiscal label, e.g. "FY2025 Q1"
         source   - source node name
         target   - target node name
-        value    - |signed|  (bar size is the magnitude)
-        signed   - the real (possibly negative) figure
+        value    - the BALANCED flow magnitude (bar size); see below
+        signed   - the real (possibly negative) figure, for labels
         neg      - True if ``signed`` < 0  (render with accounting parentheses)
 
-    NOTE: a stage with a loss (e.g. operating loss) makes ``value`` exceed the
-    profit spine, so the waterfall stops balancing for that quarter. Such rows are
-    flagged via ``neg``; the reel defaults to start_year=2015, where NVIDIA's
-    stages are profitable.
+    BALANCED WATERFALL (handles loss quarters):
+    A Sankey requires each node's outflow to equal its inflow. Naively using
+    ``|signed|`` breaks this when a stage is a LOSS: e.g. an operating loss makes
+    the derived OpEx leak (= GrossProfit - OperatingIncome) LARGER than Gross
+    Profit, so the node would emit more than it receives. Instead we build the
+    waterfall top-down, clamping each "kept" (spine) amount to ``[0, parent]`` and
+    routing the remainder to the leak::
+
+        gross_kept = clamp(gross_profit, 0, revenue);  cogs = revenue   - gross_kept
+        op_kept    = clamp(op_income,   0, gross_kept); opex = gross_kept - op_kept
+        net_kept   = clamp(net_income,  0, op_kept);    tax  = op_kept    - net_kept
+
+    For profitable quarters this is identical to the raw residuals. For loss
+    quarters the green "profit spine" simply pinches toward zero (no profit made
+    it through) while the leaks absorb the parent - a coherent, honest picture.
+    The ``signed`` column still carries the real negative figure for the labels.
     """
+    def clamp(x, lo, hi):
+        return max(lo, min(x, hi))
+
     rows = []
     for _, r in df.iterrows():
-        for src, tgt, col in FLOWS:
-            signed = r[col]
+        rev = r["revenue"]
+        gross_kept = clamp(r["gross_profit"], 0.0, rev)
+        cogs = rev - gross_kept
+        op_kept = clamp(r["op_income"], 0.0, gross_kept)
+        opex = gross_kept - op_kept
+        net_kept = clamp(r["net_income"], 0.0, op_kept)
+        tax = op_kept - net_kept
+
+        # (source, target, balanced value, real signed figure for the label)
+        flows = [
+            ("Revenue", "Gross Profit", gross_kept, r["gross_profit"]),
+            ("Revenue", "Cost of Revenue", cogs, r["cogs"]),
+            ("Gross Profit", "Operating Income", op_kept, r["op_income"]),
+            ("Gross Profit", "Operating Expenses", opex, r["opex"]),
+            ("Operating Income", "Net Income", net_kept, r["net_income"]),
+            ("Operating Income", "Tax & Other", tax, r["tax_other"]),
+        ]
+        for src, tgt, value, signed in flows:
             rows.append({
                 "period": r["period"],
                 "quarter": r["quarter"],
                 "source": src,
                 "target": tgt,
-                "value": abs(signed),       # magnitude -> bar size
-                "signed": signed,
-                "neg": signed < 0,          # -> parenthesized label
+                "value": value,             # balanced magnitude -> bar size
+                "signed": signed,           # real figure -> parenthesized label
+                "neg": signed < 0,
             })
     return pd.DataFrame(rows)
 
