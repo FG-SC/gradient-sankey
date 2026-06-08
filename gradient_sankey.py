@@ -34,7 +34,7 @@ import tempfile
 import shutil
 import os
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 
 
 # =============================================================================
@@ -1331,7 +1331,11 @@ class SankeyRaceMultiLayerParallel:
                     va = links_a.get(key, 0)
                     vb = links_b.get(key, 0)
                     v = va + (vb - va) * t
-                    if v > 0.1:
+                    # Keep every real link. The old absolute 0.1 cutoff silently
+                    # dropped small-magnitude flows (e.g. $B financial data where a
+                    # 0.085 flow is real), leaving nodes with missing in/out arrows;
+                    # a link fading to 0 just shrinks smoothly, so only skip ~0.
+                    if v > 1e-9:
                         interp_links.append((key[0], key[1], v))
 
                 interp_pos = {}

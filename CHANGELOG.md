@@ -3,6 +3,17 @@
 All notable changes to **gradient-sankey** are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.2] — 2026-06-08 — Fix dropped small-magnitude links in animations
+
+### Fixed
+- **Small flows vanished during animation** — `animate()`'s frame interpolation
+  dropped any link whose value fell below an absolute `0.1` threshold. For
+  small-magnitude data (e.g. an income statement in `$B`, where a `0.085` flow is
+  real) this silently removed flows, leaving nodes with missing in/out "arrows"
+  that looked misaligned (visible in the early years of the NVIDIA reel). The
+  threshold is now `1e-9` (magnitude-independent): every real link is kept and a
+  link fading toward zero simply shrinks smoothly. `save_frame()` was unaffected.
+
 ## [1.1.1] — 2026-06-08 — Hot-path vectorization (pixel-identical)
 
 Performance pass on the render hot path. **Output is byte-for-byte unchanged** —

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gradient-sankey"
-version = "1.1.1"
+version = "1.1.2"
 description = "Animated, true-gradient Sankey diagrams with themes, overlays, dynamic colors and audio."
 readme = "README.md"
 license = { text = "MIT" }
