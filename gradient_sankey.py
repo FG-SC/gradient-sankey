@@ -34,7 +34,7 @@ import tempfile
 import shutil
 import os
 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 
 
 # =============================================================================
@@ -845,56 +845,72 @@ def _render_chunk(args):
         chunk_path,
     ]
 
-    process = subprocess.Popen(
-        ffmpeg_cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    def _pipe_frames():
+        """Spawn FFmpeg, draw + pipe every frame once. Raises on pipe/encode error."""
+        process = subprocess.Popen(
+            ffmpeg_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            for frame_data in frames_data:
+                ax.clear()
+                ax.set_xlim(0, plot_width)
+                ax.set_ylim(0, plot_height)
+                ax.set_aspect('auto')
+                ax.axis('off')
+                ax.set_facecolor(bg_color)
 
+                _draw_frame(ax, frame_data, draw_cfg)
+
+                # Title (caller path so static/video titles can differ)
+                display_title = title if title else ""
+                ax.text(plot_width / 2, plot_height * 0.95,
+                        f"{display_title}\n{frame_data.time_label}" if display_title else frame_data.time_label,
+                        ha='center', va='top', fontsize=title_fontsize, fontweight='bold',
+                        color=title_text_color,
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor=title_bg_color, alpha=title_bg_alpha))
+
+                fig.canvas.draw()
+                buf = fig.canvas.buffer_rgba()
+                img_array = np.asarray(buf)
+                rgb_array = np.ascontiguousarray(img_array[:, :, :3])
+                process.stdin.write(rgb_array.tobytes())
+
+            process.stdin.close()
+            _stdout, stderr = process.communicate(timeout=300)
+            if process.returncode != 0:
+                raise RuntimeError(
+                    f"FFmpeg failed for chunk {chunk_id} (exit {process.returncode}):\n"
+                    f"{stderr.decode(errors='ignore')[-800:]}"
+                )
+        except BaseException:
+            # Never leak the subprocess on error
+            try:
+                process.kill()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=10)
+            except Exception:
+                pass
+            raise
+
+    # Retry transient failures (e.g. a broken FFmpeg pipe -> OSError under heavy
+    # system load) by re-spawning FFmpeg and re-rendering the chunk from scratch.
     try:
-        for frame_data in frames_data:
-            ax.clear()
-            ax.set_xlim(0, plot_width)
-            ax.set_ylim(0, plot_height)
-            ax.set_aspect('auto')
-            ax.axis('off')
-            ax.set_facecolor(bg_color)
-
-            _draw_frame(ax, frame_data, draw_cfg)
-
-            # Title (drawn by the caller path so the static/video titles can differ)
-            display_title = title if title else ""
-            ax.text(plot_width / 2, plot_height * 0.95,
-                    f"{display_title}\n{frame_data.time_label}" if display_title else frame_data.time_label,
-                    ha='center', va='top', fontsize=title_fontsize, fontweight='bold',
-                    color=title_text_color,
-                    bbox=dict(boxstyle='round,pad=0.3', facecolor=title_bg_color, alpha=title_bg_alpha))
-
-            fig.canvas.draw()
-            buf = fig.canvas.buffer_rgba()
-            img_array = np.asarray(buf)
-            rgb_array = np.ascontiguousarray(img_array[:, :, :3])
-            process.stdin.write(rgb_array.tobytes())
-
-        process.stdin.close()
-        _stdout, stderr = process.communicate(timeout=300)
-        if process.returncode != 0:
-            raise RuntimeError(
-                f"FFmpeg failed for chunk {chunk_id} (exit {process.returncode}):\n"
-                f"{stderr.decode(errors='ignore')[-800:]}"
-            )
-    except BaseException:
-        # Never leak the subprocess or the figure on error
-        try:
-            process.kill()
-        except Exception:
-            pass
-        try:
-            process.wait(timeout=10)
-        except Exception:
-            pass
-        raise
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                _pipe_frames()
+                break
+            except (OSError, RuntimeError) as e:
+                if attempt >= attempts:
+                    raise RuntimeError(
+                        f"chunk {chunk_id} failed after {attempts} attempts: {e}"
+                    ) from e
+                time.sleep(0.6 * attempt)  # brief backoff, then retry
     finally:
         plt.close(fig)
 

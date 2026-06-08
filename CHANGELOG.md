@@ -3,6 +3,17 @@
 All notable changes to **gradient-sankey** are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.3] — 2026-06-08 — Resilient parallel rendering under load
+
+### Changed
+- **Render workers retry transient failures** — under heavy system load an FFmpeg
+  pipe can break mid-chunk (`OSError [Errno 22]`). The worker now re-spawns FFmpeg
+  and re-renders the chunk (up to 3 attempts with backoff) instead of failing the
+  whole render. (Before v1.1.1 such a hiccup was silently swallowed into a
+  truncated/corrupt video; v1.1.1 surfaced it; v1.1.3 recovers from it.)
+- The NVIDIA reel defaults to `--workers 4` (was 6) and exposes `--workers` so the
+  render competes less with other jobs on a busy machine.
+
 ## [1.1.2] — 2026-06-08 — Fix dropped small-magnitude links in animations
 
 ### Fixed

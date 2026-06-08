@@ -109,7 +109,7 @@ def main(args):
         audio_path=args.audio,
         audio_url=args.audio_url,
         audio_start=args.audio_start,
-        n_workers=6,
+        n_workers=args.workers,
     )
 
 
@@ -129,4 +129,6 @@ if __name__ == "__main__":
                     help="Seconds into the track where playback begins (e.g. start at the drop).")
     ap.add_argument("--refresh", action="store_true",
                     help="Re-scrape SEC EDGAR instead of using the cached nvidia_dre_wide.csv.")
+    ap.add_argument("--workers", type=int, default=4,
+                    help="Parallel render workers (default 4; lower it if the machine is busy).")
     main(ap.parse_args())
