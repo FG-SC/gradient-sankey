@@ -3,6 +3,27 @@
 All notable changes to **gradient-sankey** are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.1] — 2026-06-08 — Hot-path vectorization (pixel-identical)
+
+Performance pass on the render hot path. **Output is byte-for-byte unchanged** —
+verified by a 13-scene old-vs-new pixel diff (all modes, themes, glow, labels,
+$ y-axis, overlay, dynamic colors, n_segments 25/50/100): max Δ = 0/255.
+
+### Changed
+- **Vectorized gradient-quad assembly** — the per-segment Python `for` loop that
+  built each link's quads is replaced by numpy (`np.stack`/`column_stack` into an
+  `(n_segments, 4, 2)` block, concatenated once into a single `PolyCollection`).
+  ~4× faster assembly at `n_segments=50`, ~8× at 100; draw order preserved so
+  alpha-blended overlaps are identical.
+- **Hoisted the Bézier easing factors** (`_bezier_factor`) out of the per-link
+  loop — they're frame-invariant.
+- **Glow color computed once** per frame instead of a list-comprehension per glow
+  layer.
+
+### Fixed
+- **Temp-dir leak on Windows** — `_rmtree_robust` retries cleanup so the (empty)
+  `sankey_multi_parallel_*` directories no longer accumulate in `%TEMP%`.
+
 ## [1.1.0] — 2026-06-08 — Hardening, packaging & repo cleanup
 
 Quality pass over the whole repo. Backward‑compatible except for the module

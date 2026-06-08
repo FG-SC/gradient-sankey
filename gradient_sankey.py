@@ -34,7 +34,7 @@ import tempfile
 import shutil
 import os
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 
 # =============================================================================
@@ -295,14 +295,30 @@ DEFAULT_GRADIENT_SEGMENTS = 50
 # Shared low-level drawing helpers
 # =============================================================================
 
-def _bezier_vec(t_arr, y_start, y_end):
-    """Vectorized smooth (ease-in-out cubic) interpolation used for link curves."""
-    factor = np.where(
+def _bezier_factor(t_arr):
+    """Ease-in-out cubic factor for the link curves (frame-invariant in t)."""
+    return np.where(
         t_arr < 0.5,
         4 * t_arr ** 3,
         1 - (-2 * t_arr + 2) ** 3 / 2
     )
-    return y_start + (y_end - y_start) * factor
+
+
+def _bezier_vec(t_arr, y_start, y_end):
+    """Vectorized smooth (ease-in-out cubic) interpolation used for link curves."""
+    return y_start + (y_end - y_start) * _bezier_factor(t_arr)
+
+
+def _rmtree_robust(path, tries=4, delay=0.15):
+    """Remove a temp dir, retrying briefly. On Windows a lingering FFmpeg/handle
+    can leave the (now-empty) directory behind; ``ignore_errors=True`` alone then
+    silently abandons it, so these accumulate. Retry, then give up quietly."""
+    for _ in range(tries):
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.exists(path):
+            return
+        time.sleep(delay)
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def _draw_frame(ax, frame_data, cfg):
@@ -345,6 +361,12 @@ def _draw_frame(ax, frame_data, cfg):
     t1 = cfg['_t1']
     t_mid = cfg['_t_mid']
     layer_x_positions = cfg['_layer_x_positions']
+    # Frame-invariant cubic-ease factors, hoisted out of the per-link loop.
+    f0 = cfg.get('_f0')
+    f1 = cfg.get('_f1')
+    if f0 is None:
+        f0 = np.where(t0 < 0.5, 4 * t0 ** 3, 1 - (-2 * t0 + 2) ** 3 / 2)
+        f1 = np.where(t1 < 0.5, 4 * t1 ** 3, 1 - (-2 * t1 + 2) ** 3 / 2)
 
     def _node_hex(n):
         if frame_data.node_colors:
@@ -425,8 +447,11 @@ def _draw_frame(ax, frame_data, cfg):
 
     # Build gradient quads with crossing reduction: each node's outgoing flows are
     # stacked by the target's Y-center, incoming flows by the source's Y-center.
-    all_vertices = []
-    all_colors = []
+    # One (n_segments, 4, 2) vertex block + (n_segments, 4) RGBA block per link,
+    # concatenated once into a single PolyCollection (numpy-vectorized, no per-
+    # segment Python loop). Draw order is preserved exactly (alpha-blend safe).
+    vert_blocks = []
+    color_blocks = []
 
     def _yc(n):
         _nx, nyb, nh = node_positions_rect[n]
@@ -475,29 +500,39 @@ def _draw_frame(ax, frame_data, cfg):
 
         seg_x0 = x0 + (x1 - x0) * t0
         seg_x1 = x0 + (x1 - x0) * t1
-        seg_y0_top = _bezier_vec(t0, y0_top, y1_top)
-        seg_y0_bot = _bezier_vec(t0, y0_bot, y1_bot)
-        seg_y1_top = _bezier_vec(t1, y0_top, y1_top)
-        seg_y1_bot = _bezier_vec(t1, y0_bot, y1_bot)
+        # Bézier via precomputed ease factors (same result as _bezier_vec)
+        seg_y0_top = y0_top + (y1_top - y0_top) * f0
+        seg_y0_bot = y0_bot + (y1_bot - y0_bot) * f0
+        seg_y1_top = y0_top + (y1_top - y0_top) * f1
+        seg_y1_bot = y0_bot + (y1_bot - y0_bot) * f1
 
         colors = rgb_start + np.outer(t_mid, rgb_end - rgb_start)
 
-        for i in range(n_segments):
-            all_vertices.append([
-                (seg_x0[i], seg_y0_bot[i]),
-                (seg_x0[i], seg_y0_top[i]),
-                (seg_x1[i], seg_y1_top[i]),
-                (seg_x1[i], seg_y1_bot[i]),
-            ])
-            all_colors.append((*colors[i], link_alpha))
+        # (n_segments, 4, 2): the 4 corners per segment, same order as before
+        # (bottom-left, top-left, top-right, bottom-right).
+        verts = np.stack([
+            np.column_stack((seg_x0, seg_y0_bot)),
+            np.column_stack((seg_x0, seg_y0_top)),
+            np.column_stack((seg_x1, seg_y1_top)),
+            np.column_stack((seg_x1, seg_y1_bot)),
+        ], axis=1)
+        rgba = np.empty((n_segments, 4))
+        rgba[:, :3] = colors
+        rgba[:, 3] = link_alpha
+        vert_blocks.append(verts)
+        color_blocks.append(rgba)
 
-    if all_vertices:
-        # Glow: wide translucent layers behind the links (neon effect on dark bg)
-        for g in range(link_glow, 0, -1):
-            glow_colors = [(r, gc, b, link_alpha * 0.12) for (r, gc, b, _a) in all_colors]
-            glow_pc = PolyCollection(all_vertices, facecolors=glow_colors,
-                                     edgecolors=glow_colors, linewidths=2.5 * g)
-            ax.add_collection(glow_pc)
+    if vert_blocks:
+        all_vertices = np.concatenate(vert_blocks, axis=0)   # (N, 4, 2)
+        all_colors = np.concatenate(color_blocks, axis=0)    # (N, 4) RGBA
+        # Glow: wide translucent layers behind the links (neon effect on dark bg).
+        # The glow color is value-invariant across layers -> compute once.
+        if link_glow:
+            glow_colors = all_colors.copy()
+            glow_colors[:, 3] = link_alpha * 0.12
+            for g in range(link_glow, 0, -1):
+                ax.add_collection(PolyCollection(all_vertices, facecolors=glow_colors,
+                                                 edgecolors=glow_colors, linewidths=2.5 * g))
         ax.add_collection(PolyCollection(all_vertices, facecolors=all_colors, edgecolors='none'))
 
     # Nodes + labels
@@ -691,6 +726,8 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
     t0 = t[:-1]
     t1 = t[1:]
     t_mid = (t0 + t1) / 2
+    f0 = _bezier_factor(t0)
+    f1 = _bezier_factor(t1)
 
     layer_spacing = (plot_width - 2 * padding - node_width) / max(1, n_layers - 1)
     layer_x_positions = {}
@@ -718,7 +755,7 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
         'link_glow': link_glow,
         'yaxis_node': yaxis_node,
         'yaxis_suffix': yaxis_suffix,
-        '_t0': t0, '_t1': t1, '_t_mid': t_mid,
+        '_t0': t0, '_t1': t1, '_t_mid': t_mid, '_f0': f0, '_f1': f1,
         '_layer_x_positions': layer_x_positions,
     }
     _draw_frame(ax, frame_data, cfg)
@@ -780,6 +817,8 @@ def _render_chunk(args):
     draw_cfg['_t0'] = t0
     draw_cfg['_t1'] = t1
     draw_cfg['_t_mid'] = t_mid
+    draw_cfg['_f0'] = _bezier_factor(t0)
+    draw_cfg['_f1'] = _bezier_factor(t1)
     draw_cfg['_layer_x_positions'] = layer_x_positions
 
     chunk_path = os.path.join(temp_dir, f"chunk_{chunk_id:04d}.mp4")
@@ -1624,7 +1663,7 @@ class SankeyRaceMultiLayerParallel:
 
         result = subprocess.run(concat_cmd, capture_output=True)
         if result.returncode != 0 or not os.path.exists(silent_path):
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            _rmtree_robust(temp_dir)
             raise RuntimeError(
                 "FFmpeg concat failed:\n" + result.stderr.decode(errors='ignore')[-1000:]
             )
@@ -1657,7 +1696,7 @@ class SankeyRaceMultiLayerParallel:
                 else:
                     print(f"  Audio muxed: {os.path.basename(audio_path)} (start at {audio_start}s)")
 
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        _rmtree_robust(temp_dir)
 
         if not os.path.exists(output_path):
             raise RuntimeError(f"Render finished but output was not produced: {output_path}")
