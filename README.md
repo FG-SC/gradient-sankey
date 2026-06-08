@@ -1,6 +1,6 @@
 # Animated Sankey Flow
 
-A Python library for creating **Sankey diagrams with real color gradients** - the only library that renders true gradient connections between nodes.
+A Python library for **animated, gradient Sankey diagrams** — the only one that renders **true color gradients** on the connections, with a full toolkit for storytelling videos: dark themes, dynamic colors, accounting‑style labels, a dynamic value axis, an optional time‑series overlay (bar‑chart‑race style), and **background music straight from a local MP3 or a YouTube URL**.
 
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
@@ -10,543 +10,388 @@ A Python library for creating **Sankey diagrams with real color gradients** - th
 
 ## The Gradient Difference
 
-**No popular visualization library supports gradient colors on Sankey connections.** This library is unique in rendering **true color gradients** that smoothly transition from source node color to target node color.
+**No mainstream visualization library supports gradient colors on Sankey links.** This one renders **true color gradients** that flow from the source node's color to the target node's color.
 
 ![Gradient Connections](assets/images/gradient_example.png)
 
-| Library | Sankey Support | Gradient Connections |
-|---------|----------------|---------------------|
-| Plotly | Yes | No (solid colors only) |
-| Matplotlib | No native support | - |
-| Seaborn | No | - |
-| Holoviews | Yes | No (solid colors only) |
-| **This library** | **Yes** | **Yes - true gradients!** |
+| Library | Sankey | Gradient links | Animation | Background music |
+|---|---|---|---|---|
+| Plotly | ✅ | ❌ solid only | ❌ | ❌ |
+| Matplotlib | ❌ (no native) | – | – | – |
+| Holoviews | ✅ | ❌ solid only | ❌ | ❌ |
+| **This library** | ✅ | ✅ **true gradients** | ✅ | ✅ |
 
-Each connection is rendered with **50 color segments** by default, creating smooth visual transitions that make data flows intuitive and beautiful. The number of segments is configurable via the `n_segments` parameter.
+Each link is drawn as **50 color segments** by default (configurable via `n_segments`) following a **cubic‑Bézier** curve.
 
 ---
 
-## Features
+## What's new in this version
 
-- **True gradient connections** - colors flow from source to target (50 segments per link)
-- **Animated videos** - bar-chart-race style with smooth transitions
-- **Static images** - export single-frame Sankey diagrams as PNG/PDF/SVG
-- **Multiple animation modes** - ranking, stacked, or both
-- **Dynamic node colors** - nodes change color based on ranking/value over time
-- **Multiple layers** - support for 2, 3, 4 or more layers
-- **10 color palettes** - Rainbow, Viridis, Plasma, and more
-- **Parallel rendering** - ~2x faster with multiprocessing
-- **High quality** - FancyBboxPatch with rounded corners
+Everything below is **additive and backward‑compatible** — old code keeps working.
+
+- 🌑 **Dark theme + neon glow** — `theme="dark"`, `link_glow`, `link_alpha`, custom `bg_color`/`label_color`/`node_edge_color`/`title_text_color`.
+- 🎨 **Dynamic node colors** — including a new `"intensity"` mode (keeps each node's hue, brightens with value).
+- 🔀 **Automatic crossing reduction** — links are stacked by the other end's vertical position, so flows don't tangle.
+- 📐 **Absolute scale** — `absolute_scale=True` makes bars grow in true magnitude across frames (the "explosion" effect).
+- 🏷️ **Custom value labels & accounting parentheses** — `node_value_labels` / `node_value_labels_per_frame` (e.g. show losses as `(5)`); small bars print the value next to the node name so negatives are never hidden.
+- 📊 **Dynamic value Y‑axis on any node** — `yaxis_node=...` draws an evolving `$` ruler next to a node.
+- 📈 **Optional time‑series overlay (bar‑chart‑race style)** — `overlay_series=...` adds a growing mini‑chart + a discreet "big number" in the footer (e.g. a stock price). **Optional** — the flow can stay the main focus.
+- 🎵 **Background music** — `audio_path="song.mp3"` **or** `audio_url="https://youtu.be/..."` (downloads via yt‑dlp, timestamps ignored), with `audio_start` and `audio_fade`.
+
+Jump to [the feature guide](#feature-guide) or the [full NVIDIA example](#full-example-nvidia-income-statement-reel).
 
 ---
 
 ## Installation
 
 ```bash
-git clone https://github.com/FG-SC/animated-sankey-flow.git
-cd animated-sankey-flow
+git clone https://github.com/FG-SC/gradient-sankey.git
+cd gradient-sankey
 pip install -r requirements.txt
 ```
 
-### Dependencies
+**Required:** `matplotlib`, `pandas`, `numpy`.
 
-```
-pandas>=2.0.0
-numpy>=1.24.0
-matplotlib>=3.7.0
-```
+**FFmpeg** (needed for any video/audio export — static PNGs work without it):
 
-### FFmpeg (only needed for video export)
+- Windows: `choco install ffmpeg` or download from <https://ffmpeg.org/>
+- Linux: `sudo apt install ffmpeg`
+- macOS: `brew install ffmpeg`
 
-- **Windows**: `choco install ffmpeg` or download from https://ffmpeg.org/
-- **Linux**: `sudo apt install ffmpeg`
-- **macOS**: `brew install ffmpeg`
+**Optional extras:**
+
+- `yfinance` — stock/financial series for the time‑series overlay.
+- `yt-dlp` — background music from a YouTube URL (`pip install yt-dlp`; also needs FFmpeg).
 
 ---
 
 ## Quick Start
 
-### Static Sankey Diagram
-
-Create a single-frame Sankey with gradient connections:
+### Static gradient Sankey
 
 ```python
 import pandas as pd
 from sankey_race_multi_layers_parallel import SankeyRaceMultiLayerParallel
 
-# Energy flow data
 df = pd.DataFrame([
-    {"year": 2024, "source": "Coal", "target": "Electricity", "value": 24},
-    {"year": 2024, "source": "Coal", "target": "Industry", "value": 12},
+    {"year": 2024, "source": "Coal",        "target": "Electricity", "value": 24},
     {"year": 2024, "source": "Natural Gas", "target": "Electricity", "value": 30},
-    {"year": 2024, "source": "Natural Gas", "target": "Industry", "value": 15},
-    {"year": 2024, "source": "Nuclear", "target": "Electricity", "value": 22},
-    {"year": 2024, "source": "Renewables", "target": "Electricity", "value": 30},
-    {"year": 2024, "source": "Renewables", "target": "Industry", "value": 14},
-    {"year": 2024, "source": "Renewables", "target": "Transport", "value": 10},
+    {"year": 2024, "source": "Renewables",  "target": "Electricity", "value": 30},
+    {"year": 2024, "source": "Renewables",  "target": "Industry",    "value": 14},
 ])
 
-# Define layers and colors
-layers = [
-    ["Coal", "Natural Gas", "Nuclear", "Renewables"],
-    ["Electricity", "Industry", "Transport"]
-]
-
-colors = {
-    "Coal": "#4A4A4A",
-    "Natural Gas": "#FF7F0E",
-    "Nuclear": "#9467BD",
-    "Renewables": "#2CA02C",
-    "Electricity": "#D62728",
-    "Industry": "#7F7F7F",
-    "Transport": "#17BECF",
-}
-
-# Create Sankey
-sankey = SankeyRaceMultiLayerParallel.from_dataframe(
-    df=df,
-    layers=layers,
-    time_col="year",
-    source_col="source",
-    target_col="target",
-    value_col="value",
-    node_colors=colors,
-)
-
-# Export as static image
-sankey.save_frame(
-    output_path="energy_flow.png",
-    frame_index=0,
-    title="Energy Flow 2024",
-    figsize=(12, 8),
-    dpi=150,
-)
-```
-
-### Animated Sankey Diagram
-
-Add multiple time periods to create animations:
-
-```python
-# Data with multiple years (2020-2030)
-df = pd.DataFrame([
-    # 2020: High fossil, low renewable
-    {"year": 2020, "source": "Coal", "target": "Electricity", "value": 40},
-    {"year": 2020, "source": "Renewables", "target": "Electricity", "value": 10},
-    # ... more rows ...
-    # 2030: Low fossil, high renewable
-    {"year": 2030, "source": "Coal", "target": "Electricity", "value": 5},
-    {"year": 2030, "source": "Renewables", "target": "Electricity", "value": 90},
-])
+layers = [["Coal", "Natural Gas", "Renewables"], ["Electricity", "Industry"]]
 
 sankey = SankeyRaceMultiLayerParallel.from_dataframe(
-    df=df,
-    layers=layers,
-    time_col="year",
-    source_col="source",
-    target_col="target",
-    value_col="value",
-    node_colors=colors,
+    df=df, layers=layers,
+    time_col="year", source_col="source", target_col="target", value_col="value",
 )
-
-# Export as animated video
-sankey.animate(
-    output_path="energy_transition.mp4",
-    title="Energy Transition 2020-2030",
-    fps=24,
-    duration_seconds=10.0,
-    ranking_mode=True,
-    stacked_mode=True,
-)
+sankey.save_frame("energy.png", title="Energy Flow 2024", figsize=(12, 8), dpi=150)
 ```
 
----
+### Animated video
 
-## Animation Modes
-
-The library supports four animation modes controlled by `ranking_mode` and `stacked_mode` parameters:
-
-### Stacked + Ranking (Default)
-
-Nodes reorder by value AND resize proportionally. Best for showing both relative size and ranking changes.
+Add more time periods and call `animate()`:
 
 ```python
 sankey.animate(
-    output_path="animation.mp4",
-    ranking_mode=True,   # Nodes reorder by value
-    stacked_mode=True,   # Node heights proportional to value
-)
-```
-
-![Stacked + Ranking Mode](assets/gifs/mode_stacked_ranking.gif)
-
----
-
-### Ranking Only
-
-Nodes reorder by value but maintain uniform height. Best for focusing on ranking changes.
-
-```python
-sankey.animate(
-    output_path="animation.mp4",
-    ranking_mode=True,   # Nodes reorder by value
-    stacked_mode=False,  # Uniform node heights
-)
-```
-
-![Ranking Only Mode](assets/gifs/mode_ranking.gif)
-
----
-
-### Stacked Only
-
-Fixed node order, heights vary by value. Best for tracking individual node changes over time.
-
-```python
-sankey.animate(
-    output_path="animation.mp4",
-    ranking_mode=False,  # Fixed node order
-    stacked_mode=True,   # Node heights proportional to value
-)
-```
-
-![Stacked Only Mode](assets/gifs/mode_stacked.gif)
-
----
-
-### Fixed
-
-Fixed node order AND uniform heights. Only the links animate (changing thickness based on flow values). Best for stable comparisons where you want to focus on flow changes.
-
-```python
-sankey.animate(
-    output_path="animation.mp4",
-    ranking_mode=False,  # Fixed node order
-    stacked_mode=False,  # Uniform node heights
-)
-```
-
-![Fixed Mode](assets/gifs/mode_fixed.gif)
-
----
-
-## Dynamic Node Colors
-
-Nodes can change color dynamically based on their ranking or value. This creates visually striking animations where rising nodes turn green and falling nodes turn red.
-
-```python
-sankey.animate(
-    output_path="dynamic_colors.mp4",
-    dynamic_color_mode="ranking",  # Color by rank
-    dynamic_colormap="RdYlGn",     # Red-Yellow-Green
-)
-```
-
-![Dynamic Colors](assets/gifs/dynamic_colors.gif)
-
-### Available Color Modes
-
-| Mode | Parameter | Description |
-|------|-----------|-------------|
-| **Static** | `"static"` | Fixed colors (default) |
-| **Ranking** | `"ranking"` | Color by rank within layer (1st=green, last=red) |
-| **Value** | `"value"` | Color by value normalized within each layer |
-| **Global Value** | `"global_value"` | Color by value normalized across all frames |
-| **Percentile** | `"percentile"` | Color by percentile within layer |
-
-### Recommended Colormaps
-
-| Colormap | Best For | Description |
-|----------|----------|-------------|
-| `"RdYlGn"` | Ranking | Red (bad) -> Yellow -> Green (good) |
-| `"viridis"` | Sequential | Perceptually uniform, colorblind-friendly |
-| `"coolwarm"` | Diverging | Blue (low) -> White -> Red (high) |
-| `"plasma"` | Sequential | Purple -> Orange -> Yellow |
-| `"Blues"` | Positive only | Light blue -> Dark blue |
-
----
-
-## API Reference
-
-### `SankeyRaceMultiLayerParallel.from_dataframe()`
-
-Create a Sankey object from a pandas DataFrame.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `df` | DataFrame | Yes | Flow data with time, source, target, value columns |
-| `layers` | List[List[str]] | Yes | Node layers - each inner list is a layer |
-| `time_col` | str | Yes | Column name for time/frame |
-| `source_col` | str | Yes | Column name for source node |
-| `target_col` | str | Yes | Column name for target node |
-| `value_col` | str | Yes | Column name for flow value |
-| `node_colors` | Dict[str, str] | No | Custom hex colors per node |
-
-**Important:** Node names must be unique across all layers. If the same entity appears in multiple layers, use suffixes:
-
-```python
-# WRONG - will cause bugs:
-layer1 = ["China", "USA"]
-layer2 = ["China", "USA"]  # Name conflict!
-
-# CORRECT:
-layer1 = ["China (export)", "USA (export)"]
-layer2 = ["China (import)", "USA (import)"]
-```
-
----
-
-### `save_frame()` - Static Image Export
-
-Export a single frame as a static image.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `output_path` | str | Required | Output file path (.png, .pdf, .svg) |
-| `frame_index` | int | 0 | Which frame to export (0-indexed) |
-| `title` | str | None | Title displayed on the image |
-| `figsize` | tuple | (16, 10) | Figure size in inches (width, height) |
-| `dpi` | int | 150 | Image resolution (dots per inch) |
-| `node_width` | float | 0.5 | Width of node rectangles |
-| `font_size` | int | 10 | Font size for labels |
-| `bar_height_ratio` | float | 0.85 | Ratio of usable height for bars |
-| `ranking_mode` | bool | True | Sort nodes by value within each layer |
-| `stacked_mode` | bool | True | Node heights proportional to value |
-| `n_segments` | int | 50 | Number of gradient segments per link |
-
-```python
-sankey.save_frame(
-    output_path="output.png",
-    frame_index=0,
-    title="Energy Flow 2024",
-    figsize=(12, 8),
-    dpi=150,
-    n_segments=50,  # Smooth gradient with 50 color segments
-)
-```
-
----
-
-### `animate()` - Video Export
-
-Export animation as video file.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `output_path` | str | "sankey.mp4" | Output file path (.mp4, .avi, .mov) |
-| `title` | str | None | Title displayed on each frame |
-| `fps` | int | 30 | Frames per second |
-| `duration_seconds` | float | 10.0 | Total animation duration |
-| `quality` | str | "medium" | Video quality: "low", "medium", "high" |
-| `figsize` | tuple | (18, 10) | Figure size in inches |
-| `node_width` | float | 0.5 | Width of node rectangles |
-| `font_size` | int | 10 | Font size for labels |
-| `bar_height_ratio` | float | 0.85 | Ratio of usable height for bars |
-| `n_workers` | int | cpu_count | Number of parallel workers for rendering |
-| `n_segments` | int | 50 | Number of gradient segments per link |
-| `ranking_mode` | bool | True | Sort nodes by value (reorder on value change) |
-| `stacked_mode` | bool | True | Node heights proportional to value (False = uniform heights) |
-| `dynamic_color_mode` | str | "static" | Dynamic color mode (see table above) |
-| `dynamic_colormap` | str | "RdYlGn" | Matplotlib colormap for dynamic colors |
-
-**Quality Settings:**
-
-| Quality | DPI | Bitrate | Best For |
-|---------|-----|---------|----------|
-| `"low"` | 72 | 1500k | Quick previews |
-| `"medium"` | 120 | 3000k | General use |
-| `"high"` | 200 | 8000k | Presentations, publications |
-
-```python
-sankey.animate(
-    output_path="animation.mp4",
+    output_path="energy.mp4",
     title="Energy Transition",
-    fps=24,
-    duration_seconds=10.0,
-    quality="high",
-    n_segments=50,        # 50 gradient segments per link
-    ranking_mode=True,    # Nodes reorder by value
-    stacked_mode=True,    # Node heights vary by value
-    dynamic_color_mode="ranking",
-    dynamic_colormap="RdYlGn",
+    fps=24, duration_seconds=10.0,
+    ranking_mode=True, stacked_mode=True,
 )
 ```
 
+> **Node names must be unique across all layers.** If the same entity appears twice, suffix it: `"China (export)"` vs `"China (import)"`.
+
 ---
 
-## Color Palettes
+## Core API
 
-The library supports **three ways** to specify colors with continuous interpolation:
+### `SankeyRaceMultiLayerParallel.from_dataframe(...)`
 
-### 1. Built-in Palettes (ColorPalette enum)
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `df` | DataFrame | — | Flow data: time, source, target, value columns. |
+| `layers` | List[List[str]] | — | Node layers, left → right. Each inner list is one column. |
+| `time_col` / `source_col` / `target_col` / `value_col` | str | — | Column names. |
+| `layer_palettes` | List | None | Optional per‑layer palette for auto‑coloring. |
+| `node_colors` | Dict[str,str] | None | Explicit hex color per node (recommended). |
+
+### `save_frame(...)` — static image (PNG/PDF/SVG)
+
+Key params: `output_path`, `frame_index`, `title`, `figsize`, `dpi`, `ranking_mode`, `stacked_mode`, `n_segments`, plus all the **theme** params (`theme`, `bg_color`, `link_glow`, …) and `node_value_labels` described below.
+
+### `animate(...)` — video (parallel render → FFmpeg)
+
+The big one. Parameters grouped by purpose:
+
+**Output & timing** — `output_path`, `title`, `figsize`, `fps`, `duration_seconds`, `quality` (`"low"`/`"medium"`/`"high"`), `n_workers`.
+
+**Layout** — `node_width`, `padding`, `font_size`, `bar_height_ratio`, `margin_top`, `margin_bottom`, `title_fontsize`, `n_segments`.
+
+**Positioning** — `ranking_mode`, `stacked_mode`, `ascending`, `absolute_scale`.
+
+**Theme** — `theme`, `bg_color`, `label_color`, `node_edge_color`, `title_text_color`, `title_bg_color`, `title_bg_alpha`, `link_alpha`, `link_glow`.
+
+**Dynamic colors** — `dynamic_color_mode`, `dynamic_colormap`.
+
+**Labels** — `node_value_labels_per_frame`.
+
+**Value axis** — `yaxis_node`, `yaxis_suffix`.
+
+**Time‑series overlay** — `overlay_series`, `overlay_label`, `overlay_color`, `overlay_value_suffix`, `overlay_x_labels`.
+
+**Audio** — `audio_path`, `audio_url`, `audio_start`, `audio_fade`.
+
+Each is explained with examples in the guide below.
+
+---
+
+## Feature guide
+
+### 1. Animation modes — `ranking_mode` × `stacked_mode`
+
+| `ranking_mode` | `stacked_mode` | Behavior | Use it for |
+|:---:|:---:|---|---|
+| ✅ | ✅ | Reorder by value **and** resize (default) | size + ranking changes |
+| ✅ | ❌ | Reorder by value, uniform heights | pure ranking races |
+| ❌ | ✅ | Fixed order, heights vary by value | tracking each node over time |
+| ❌ | ❌ | Fixed order, uniform heights (only links animate) | stable comparisons |
+
+```python
+sankey.animate(ranking_mode=False, stacked_mode=True)  # e.g. an income statement (fixed order)
+```
+
+![Stacked + Ranking](assets/gifs/mode_stacked_ranking.gif)
+
+### 2. Absolute vs per‑frame scale — `absolute_scale`
+
+By default (`absolute_scale=False`) **each frame is normalized to fill the canvas** — great for showing *composition* changes (margins, mix), and every frame stays readable.
+
+Set `absolute_scale=True` to use a **single global scale** so bars grow in **true magnitude** across frames — the "watch it explode" effect (e.g. revenue going $1B → $82B literally gets taller).
+
+```python
+sankey.animate(stacked_mode=True, ranking_mode=False, absolute_scale=True)
+```
+
+> Tip: absolute scale is dramatic but back‑loaded if the series explodes late. Per‑frame fill + the [dynamic Y‑axis](#7-dynamic-value-y-axis-on-a-node) or [labels](#6-negative-values--accounting-parentheses) is often more legible.
+
+### 3. Dark theme & neon glow
+
+```python
+sankey.animate(
+    theme="dark",        # preset: near‑black bg, light labels, dark node edges
+    link_alpha=0.5,      # link translucency (0–1)
+    link_glow=1,         # 0 = off; 1–3 = neon halo layers behind links
+)
+```
+
+Override any preset color explicitly:
+
+```python
+sankey.animate(theme="dark", bg_color="#0a0a12", label_color="#EAEAF2",
+               node_edge_color="#1a1a28", title_text_color="#FFFFFF")
+```
+
+`theme="light"` (default) keeps the classic white background.
+
+### 4. Dynamic node colors — `dynamic_color_mode`
+
+Recolor nodes every frame based on their value/rank:
+
+| Mode | Meaning |
+|---|---|
+| `"static"` | Fixed colors (default) |
+| `"ranking"` | Color by rank within the layer (1st → last) |
+| `"value"` | Color by value, normalized **within** each layer |
+| `"global_value"` | Color by value, normalized **across all frames** |
+| `"percentile"` | Color by percentile within the layer |
+| `"intensity"` | **Keeps each node's base hue**, scales brightness by value (globally) — nodes "light up" as they grow |
+
+```python
+sankey.animate(dynamic_color_mode="ranking",
+               dynamic_colormap=["#FF1E56", "#FFC400", "#7CFF6B"])  # neon red→green
+```
+
+`dynamic_colormap` accepts a `ColorPalette`, any matplotlib colormap name, or a list of hex colors.
+
+### 5. Uniform flows — color by position
+
+For a clean, uniform look, give the i‑th node of **every** layer the same color (so each "track" of the flow is one consistent hue, and the gradient only appears where tracks split):
+
+```python
+POS = ["#33E08A", "#FF2E97"]   # position 0 (kept) = green, position 1 (leak) = magenta
+node_colors = {n: POS[i] for layer in layers for i, n in enumerate(layer)}
+```
+
+### 6. Negative values & accounting parentheses
+
+Sankey links can't be negative, so values are sized by **magnitude** (`abs`). To keep sign information, pass **custom label strings** — negatives in `(parentheses)`, accounting‑style:
+
+```python
+def fmt(v):                       # 4.78 -> "4.8" ; -4.78 -> "(4.8)"
+    s = f"{abs(v):.1f}" if abs(v) < 10 else f"{abs(v):.0f}"
+    return f"({s})" if v < 0 else s
+
+# static frame:
+sankey.save_frame(..., node_value_labels={"Net Income": fmt(58), "Tax & Other": fmt(-4.78)})
+
+# animation: one dict per data frame (aligned to the sorted time values)
+sankey.animate(..., node_value_labels_per_frame=[{node: fmt(v) for node, v in frame.items()} for frame in frames])
+```
+
+When a bar is **too small** to fit text inside, the value is automatically printed **next to the node's name** — so negatives like `Tax+Other (4.8)` are always visible.
+
+### 7. Dynamic value Y‑axis on a node
+
+Attach a subtle, **evolving** `$` ruler to one node (typically the first/biggest). Its tick labels grow over time, making the magnitude readable even when bars are per‑frame normalized:
+
+```python
+sankey.animate(
+    yaxis_node="Revenue",   # node to attach the axis to
+    yaxis_suffix="B",       # tick labels become "$0", "$25B", "$50B", ...
+)
+```
+
+Ticks use "nice" round steps and rescale automatically; the node's name moves to the top of its bar to make room.
+
+### 8. Time‑series overlay (optional, bar‑chart‑race style)
+
+> **Optional.** If you only want the flow, skip this entirely. When present, it adds a growing mini‑chart + a discreet "big number" in a reserved footer band.
+
+Pass one value per data frame (aligned to the sorted time values). The chart is drawn **bar‑chart‑race style**: the curve always fills the width, the **time (X) axis evolves** (window start→now remapped to full width), the **Y axis is a running max**, and the "now" point sits at the right edge.
+
+```python
+sankey.animate(
+    overlay_series=stock_close_per_quarter,        # e.g. NVDA adjusted close, one per frame
+    overlay_label="NVDA stock  ($, split-adj.)",
+    overlay_color="#7CFF6B",
+    overlay_value_suffix="",                       # "" for price, "B" for billions, ...
+    overlay_x_labels=quarter_labels,               # e.g. ["2015 Q2", ...] → year ticks on the X axis
+    margin_bottom=0.20,                            # reserve the footer so it doesn't collide with the flow
+)
+```
+
+The overlay is horizontally aligned with the Sankey (first node → last node).
+
+### 9. Background music — local MP3 **or** YouTube URL
+
+Mux a soundtrack into the exported MP4. Two ways:
+
+**A) Local MP3**
+
+```python
+sankey.animate(
+    audio_path="song.mp3",
+    audio_start=41.5,   # seconds into the track to begin (e.g. start at the drop)
+    audio_fade=1.5,     # fade in/out seconds
+)
+```
+
+**B) Straight from a YouTube URL** *(requires `yt-dlp` + FFmpeg)*
+
+Just pass the URL — **timestamps in the link are ignored**, the full track is fetched and extracted to MP3 automatically:
+
+```python
+sankey.animate(
+    audio_url="https://www.youtube.com/watch?v=WITxo7OfMVM&t=90s",  # &t=90s is ignored
+    audio_start=269,   # start the song at 4:29 in the video
+)
+```
+
+The audio is faded in/out and trimmed to the video length. You can also download a track yourself:
+
+```python
+from sankey_race_multi_layers_parallel import youtube_to_mp3
+path = youtube_to_mp3("https://youtu.be/WITxo7OfMVM", out_dir="music")
+```
+
+> ⚠️ **Rights:** downloaded tracks may be copyrighted. For Instagram Reels, the in‑app licensed music library is the safe path; muxed audio is handy for platforms without one (e.g. LinkedIn) but may be flagged by Content‑ID. Use tracks you have the rights to.
+
+---
+
+## Full example: NVIDIA income‑statement reel
+
+[`examples/render_nvidia_reel.py`](examples/render_nvidia_reel.py) combines almost every feature: real SEC EDGAR data, a fixed‑order P&L waterfall, dynamic `$` Y‑axis, accounting parentheses for loss quarters, a bar‑chart‑race stock overlay, dark/neon theme, and background music.
+
+```bash
+# Local MP3, full 90s reel from 2009:
+python examples/render_nvidia_reel.py --start-year 2009 --duration 90 \
+    --audio "examples/music/song.mp3" --audio-start 269
+
+# Or pull the music from YouTube (timestamp ignored):
+python examples/render_nvidia_reel.py --start-year 2015 --duration 45 \
+    --audio-url "https://www.youtube.com/watch?v=WITxo7OfMVM" --audio-start 269
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--start-year` | 2015 | First year of the series |
+| `--duration` | 45 | Video length (seconds) |
+| `--audio` | — | Local MP3 path |
+| `--audio-url` | — | YouTube URL (needs yt‑dlp) |
+| `--audio-start` | 0 | Seconds into the track to begin |
+
+[`examples/nvidia_dre.py`](examples/nvidia_dre.py) is the data layer: it scrapes 4 clean series from the **SEC EDGAR** XBRL API (Revenue, Gross Profit, Operating Income, Net Income) and derives the "leak" flows as residuals (`COGS = Revenue − Gross`, etc.) so the Sankey always balances.
+
+---
+
+## Color palettes
+
+Three ways to specify colors, all interpolated continuously:
 
 ```python
 from sankey_race_multi_layers_parallel import ColorPalette, get_palette_colors
 
-# Get 5 colors from Viridis palette (continuous interpolation)
-colors = get_palette_colors(ColorPalette.VIRIDIS, n_colors=5)
-# Returns: ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725']
+get_palette_colors(ColorPalette.VIRIDIS, n_colors=5)        # built-in enum
+get_palette_colors("RdYlGn", n_colors=10)                   # any matplotlib colormap
+get_palette_colors(["#FF0000", "#FFFF00", "#00FF00"], 8)    # custom hex list (interpolated)
+get_palette_colors(ColorPalette.OCEAN, 8, reverse=True)     # reversed
 ```
 
-| Palette | Matplotlib Colormap | Description |
-|---------|---------------------|-------------|
-| `RAINBOW` | `rainbow` | Full spectrum: violet -> blue -> green -> yellow -> red |
-| `VIRIDIS` | `viridis` | Perceptually uniform, colorblind-friendly |
-| `PLASMA` | `plasma` | Purple -> Pink -> Orange -> Yellow |
-| `INFERNO` | `inferno` | Black -> Purple -> Red -> Orange -> Yellow |
-| `PASTEL` | `Pastel1` | Soft, muted categorical colors |
-| `DARK` | `Dark2` | Deep, rich categorical tones |
-| `EARTH` | `YlOrBr` | Yellow -> Orange -> Brown (sequential) |
-| `OCEAN` | `Blues` | Light blue -> Dark blue (sequential) |
-| `SUNSET` | `Oranges` | Light orange -> Dark orange (sequential) |
-| `NEON` | `Set1` | Vibrant, high-contrast categorical colors |
-
-### 2. Any Matplotlib Colormap (string)
-
-Use any of the 150+ matplotlib colormaps by name:
-
-```python
-# Sequential colormaps
-colors = get_palette_colors("Blues", n_colors=5)
-colors = get_palette_colors("YlOrRd", n_colors=8)
-
-# Diverging colormaps
-colors = get_palette_colors("RdYlGn", n_colors=10)  # Great for rankings
-colors = get_palette_colors("coolwarm", n_colors=7)
-
-# Qualitative colormaps
-colors = get_palette_colors("Set2", n_colors=6)
-colors = get_palette_colors("tab10", n_colors=10)
-```
-
-### 3. Custom Discrete Palette (list of hex colors)
-
-Define your own colors - they will be interpolated smoothly:
-
-```python
-# Custom Red -> Yellow -> Green palette
-custom_palette = ["#FF0000", "#FFFF00", "#00FF00"]
-colors = get_palette_colors(custom_palette, n_colors=10)
-# Returns 10 colors smoothly interpolated through red, yellow, and green
-
-# Company brand colors
-brand_colors = ["#1a1a2e", "#16213e", "#e94560"]
-colors = get_palette_colors(brand_colors, n_colors=6)
-
-# Use custom palette for dynamic colors
-sankey.animate(
-    dynamic_color_mode="ranking",
-    dynamic_colormap=["#d32f2f", "#ffc107", "#388e3c"],  # Red-Yellow-Green
-)
-```
-
-### Additional Options
-
-```python
-# Reverse any palette
-colors = get_palette_colors(ColorPalette.OCEAN, n_colors=8, reverse=True)
-
-# Use palettes for dynamic node colors
-sankey.animate(
-    dynamic_color_mode="ranking",
-    dynamic_colormap=ColorPalette.VIRIDIS,  # Using enum
-)
-
-sankey.animate(
-    dynamic_color_mode="value",
-    dynamic_colormap="coolwarm",  # Using matplotlib name
-)
-```
+Built‑in palettes: `RAINBOW`, `VIRIDIS`, `PLASMA`, `INFERNO`, `PASTEL`, `DARK`, `EARTH`, `OCEAN`, `SUNSET`, `NEON`.
 
 ---
 
-## How Gradients Work
+## How gradients work
 
-The gradient effect is achieved by dividing each link into multiple color segments. Each segment smoothly transitions from the source node color to the target node color using **cubic Bezier curves** for the path shape.
+Each link is split into `n_segments` quads along a **cubic‑Bézier** S‑curve. Segment color is a linear RGB interpolation from source to target: `color = source + t·(target − source)`, `t ∈ [0,1]`.
 
-### Gradient Segments
-
-| `n_segments` | Quality | Performance |
-|--------------|---------|-------------|
-| 10-20 | Visible color bands | Fast |
-| **50** (default) | Smooth gradient | Balanced |
-| 100+ | Ultra-smooth | Slower |
-
-The gradient colors are computed using linear interpolation in RGB color space:
-
-```
-segment_color = source_color + t × (target_color - source_color)
-```
-
-where `t` ranges from 0 (source) to 1 (target).
-
-### Link Shape
-
-Links follow a **cubic Bezier curve** for smooth S-shaped transitions:
-
-```python
-# Bezier easing function (cubic ease-in-out)
-factor = 4 * t³           # for t < 0.5
-factor = 1 - (-2t + 2)³/2 # for t >= 0.5
-```
-
-This creates natural-looking flow curves that are visually pleasing.
-
----
-
-## Understanding Sankey Diagrams
-
-### Conservative Flows
-
-In most Sankey diagrams, **flow is conserved**: sum of inputs equals sum of outputs.
-
-```
-Energy Sources (100 units) -> Consumption Sectors (100 units)
-```
-
-### Non-Conservative Flows
-
-Some diagrams show flows where quantity changes at certain nodes:
-
-```
-Revenue ($100) -> Net Income ($30) + Costs ($70)
-```
-
-Both types are supported by this library.
+| `n_segments` | Quality | Speed |
+|---|---|---|
+| 10–20 | visible bands | fast |
+| **50** (default) | smooth | balanced |
+| 100+ | ultra‑smooth | slower |
 
 ---
 
 ## Performance
 
-Parallel rendering significantly improves performance:
+Parallel rendering scales with cores:
 
-| Configuration | Time (240 frames) |
-|---------------|-------------------|
+| Config | 240 frames |
+|---|---|
 | Serial | ~70s |
-| Parallel (4 workers) | ~32s (**2.2x faster**) |
+| Parallel (4 workers) | ~32s (**2.2×**) |
+
+Tips: lower `quality` or `fps` while iterating; raise them only for the final render. High quality (dpi 200) × many frames is the main cost.
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
 animated-sankey-flow/
-├── sankey_race_multi_layers_parallel.py  # Main module
-├── assets/
-│   ├── gifs/                             # Animation GIFs for documentation
-│   │   ├── mode_stacked_ranking.gif
-│   │   ├── mode_ranking.gif
-│   │   ├── mode_stacked.gif
-│   │   ├── mode_fixed.gif
-│   │   └── dynamic_colors.gif
-│   ├── images/                           # Static images
-│   │   └── gradient_example.png
-│   └── videos/                           # Example video outputs
+├── sankey_race_multi_layers_parallel.py   # the library (all features)
 ├── examples/
-│   ├── us_energy_flow.py                 # Conservative flow example
-│   └── company_financials.py             # Non-conservative example
-├── create_comprehensive_docs.py          # Documentation asset generator
-├── poc_dynamic_node_colors.py            # Dynamic colors example
+│   ├── nvidia_dre.py                       # SEC EDGAR scraper -> P&L flows
+│   ├── render_nvidia_reel.py               # full reel (CLI: --start-year/--duration/--audio[-url]/--audio-start)
+│   ├── render_nvidia_poc.py                # single static frame
+│   ├── us_energy_flow.py                    # conservative-flow example
+│   ├── company_financials.py               # non-conservative (P&L) example
+│   └── music/                               # downloaded soundtracks
+├── assets/                                  # gifs / images for docs
 ├── requirements.txt
 ├── README.md
 └── LICENSE
@@ -556,26 +401,16 @@ animated-sankey-flow/
 
 ## Troubleshooting
 
-**FFmpeg not found**
-Install FFmpeg for video export. The library works for static images without FFmpeg.
-
-**Windows multiprocessing error**
-Add `mp.freeze_support()` in your main script:
-```python
-if __name__ == '__main__':
-    import multiprocessing as mp
-    mp.freeze_support()
-    main()
-```
-
-**Nodes appearing in wrong positions**
-Ensure node names are unique across all layers.
-
-**Memory errors with large animations**
-Reduce `figsize`, `dpi`, or number of frames. Use `n_workers=2` for lower memory usage.
+- **FFmpeg not found** — install it (see [Installation](#installation)); required for any video/audio.
+- **YouTube audio fails** — `pip install yt-dlp`; ensure FFmpeg is on PATH. If a video won't download, installing `deno` resolves yt‑dlp's JS‑runtime warning.
+- **Nodes in wrong positions** — node names must be unique across layers.
+- **Negative values look odd** — bars are sized by magnitude; use `node_value_labels(_per_frame)` to show `(parentheses)`.
+- **Growth not visible** — use `absolute_scale=True`, a `yaxis_node`, and/or an `overlay_series`.
+- **Memory errors on large animations** — reduce `figsize`/`dpi`/frames, or lower `n_workers`.
+- **Windows multiprocessing** — guard your script with `if __name__ == "__main__": mp.freeze_support()`.
 
 ---
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).

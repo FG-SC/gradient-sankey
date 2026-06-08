@@ -97,6 +97,17 @@ Thumbs.db
 # Claude Code
 .claude/
 
+# Generated media in examples/ (keep the .py scripts + data .csv, not the renders)
+examples/**/*.mp4
+examples/**/*.avi
+examples/**/*.mov
+examples/**/*.mkv
+examples/**/*.png
+examples/gallery_out/
+!examples/us_energy_flow.mp4   # keep the demo render that ships with the repo
+# Downloaded soundtracks (often copyrighted) - never commit
+examples/music/
+
 # Temporary files
 *.tmp
 *.temp

@@ -181,6 +181,22 @@ class DynamicColorMode(Enum):
     VALUE = "value"             # Color by value (normalized within layer)
     GLOBAL_VALUE = "global_value"  # Color by value (normalized globally)
     PERCENTILE = "percentile"   # Color by percentile within layer
+    INTENSITY = "intensity"     # Keep each node's base HUE, scale brightness by value (globally)
+
+
+def scale_brightness(hex_color: str, factor: float, floor: float = 0.30) -> str:
+    """Keep a color's hue but scale its brightness/saturation by factor in [0,1].
+    Dim (low value) -> dark & desaturated; bright (high value) -> full neon.
+    `floor` keeps low values visible instead of pitch black."""
+    import colorsys
+    factor = max(0.0, min(1.0, factor))
+    r, g, b = to_rgb(hex_color)
+    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    lift = floor + (1.0 - floor) * factor
+    v2 = v * lift
+    s2 = s * (0.45 + 0.55 * factor)
+    r2, g2, b2 = colorsys.hsv_to_rgb(h, s2, v2)
+    return plt.matplotlib.colors.rgb2hex((r2, g2, b2))
 
 
 def get_dynamic_color(value: float, min_val: float, max_val: float,
@@ -231,6 +247,57 @@ def interpolate_color(color1: str, color2: str, t: float) -> str:
     return plt.matplotlib.colors.rgb2hex((r, g, b))
 
 
+def youtube_to_mp3(url: str, out_dir: str = None, filename: str = None) -> str:
+    """
+    Download a YouTube video's audio as an MP3 (optional feature).
+
+    Requires `yt-dlp` (pip install yt-dlp) and `ffmpeg` on PATH. Any timestamp or
+    playlist parameters in the URL are IGNORED -- only the 11-char video id is used,
+    so the full track is always downloaded.
+
+    Args:
+        url: A YouTube URL (watch?v=, youtu.be/, shorts/, embed/ ... with or without &t=).
+        out_dir: Where to save the mp3 (default: a temp dir).
+        filename: Output filename without extension (default: the video title).
+
+    Returns:
+        Absolute path to the resulting .mp3 file.
+    """
+    import re
+    import tempfile as _tempfile
+
+    try:
+        import yt_dlp
+    except ImportError as e:
+        raise ImportError(
+            "YouTube audio support requires 'yt-dlp'. Install it with:\n"
+            "    pip install yt-dlp\n"
+            "and make sure ffmpeg is available on your PATH."
+        ) from e
+
+    # Ignore timestamps / playlist junk: keep only the video id
+    m = re.search(r'(?:v=|youtu\.be/|/shorts/|/embed/|/live/)([A-Za-z0-9_-]{11})', url)
+    clean_url = f"https://www.youtube.com/watch?v={m.group(1)}" if m else url
+
+    out_dir = out_dir or _tempfile.mkdtemp(prefix="sankey_audio_")
+    os.makedirs(out_dir, exist_ok=True)
+    out_tmpl = os.path.join(out_dir, (filename or "%(title)s") + ".%(ext)s")
+
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': out_tmpl,
+        'quiet': True,
+        'no_warnings': True,
+        'postprocessors': [{'key': 'FFmpegExtractAudio',
+                            'preferredcodec': 'mp3', 'preferredquality': '0'}],
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(clean_url, download=True)
+    base = ydl.prepare_filename(info)
+    mp3_path = os.path.splitext(base)[0] + ".mp3"
+    return mp3_path
+
+
 # =============================================================================
 # Estruturas de dados (pickleable para multiprocessing)
 # =============================================================================
@@ -243,6 +310,8 @@ class FrameData:
     node_positions: Dict[str, float]
     node_values: Dict[str, float]
     node_colors: Optional[Dict[str, str]] = None  # Dynamic colors per frame
+    node_value_labels: Optional[Dict[str, str]] = None  # Override inside-node text (e.g. "(5)" for negatives)
+    progress: float = 0.0  # Continuous data-frame index (0..n_data_frames-1) for timeline overlays
 
 
 # Configurações de qualidade (mesmas do original)
@@ -255,7 +324,9 @@ DEFAULT_GRADIENT_SEGMENTS = 50
 
 def render_frame_high_quality(ax, frame_data, layers, node_colors,
                               plot_width, plot_height, node_width, font_size,
-                              n_segments, bar_height_ratio, stacked_mode):
+                              n_segments, bar_height_ratio, stacked_mode,
+                              label_color='#000000', node_edge_color='#333333',
+                              link_alpha=0.7, link_glow=0):
     """
     Renderiza um frame com alta qualidade (mesma lógica do _render_chunk).
 
@@ -271,6 +342,11 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
         n_segments: Segmentos do gradiente
         bar_height_ratio: Proporção da altura da barra
         stacked_mode: Se True, usa modo empilhado
+        label_color: Cor dos rótulos de nome dos nós (ex: '#FFFFFF' para tema escuro)
+        node_edge_color: Cor da borda dos nós
+        link_alpha: Opacidade base dos links (0-1)
+        link_glow: Número de camadas de brilho desenhadas atrás dos links
+                   (0 = sem glow; 2-3 dá efeito neon em fundo escuro)
     """
     n_layers = len(layers)
     padding = 1.2
@@ -353,31 +429,47 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
         node_out_scale[node] = h / total_out if total_out > 0 else 1
         node_in_scale[node] = h / total_in if total_in > 0 else 1
 
-    # Posições de saída/entrada
-    node_out_pos = {node: node_positions_rect[node][1] for node in node_positions_rect}
-    node_in_pos = {node: node_positions_rect[node][1] for node in node_positions_rect}
-
     # Construir gradientes
     all_vertices = []
     all_colors = []
 
-    sorted_links = sorted(frame_data.links, key=lambda x: (x[0], x[1]))
+    # Empilhar fluxos para MINIMIZAR cruzamentos: as saidas de cada no sao
+    # ordenadas pela posicao-Y do destino, e as entradas pela posicao-Y da origem.
+    def _yc(n):
+        nx, nyb, nh = node_positions_rect[n]
+        return nyb + nh / 2
 
-    for src, tgt, val in sorted_links:
-        if val <= 0 or src not in node_positions_rect or tgt not in node_positions_rect:
-            continue
+    valid_links = [(s, t, v) for (s, t, v) in frame_data.links
+                   if v > 0 and s in node_positions_rect and t in node_positions_rect]
 
+    link_y0 = {}
+    node_out_pos = {node: node_positions_rect[node][1] for node in node_positions_rect}
+    for src in node_positions_rect:
+        outs = sorted([l for l in valid_links if l[0] == src], key=lambda l: _yc(l[1]))
+        for s, t, v in outs:
+            link_y0[(s, t)] = node_out_pos[s]
+            node_out_pos[s] += v * node_out_scale.get(s, 1)
+
+    link_y1 = {}
+    node_in_pos = {node: node_positions_rect[node][1] for node in node_positions_rect}
+    for tgt in node_positions_rect:
+        ins = sorted([l for l in valid_links if l[1] == tgt], key=lambda l: _yc(l[0]))
+        for s, t, v in ins:
+            link_y1[(s, t)] = node_in_pos[t]
+            node_in_pos[t] += v * node_in_scale.get(t, 1)
+
+    for src, tgt, val in sorted(valid_links, key=lambda x: (x[0], x[1])):
         link_height_src = val * node_out_scale.get(src, 1)
         link_height_tgt = val * node_in_scale.get(tgt, 1)
 
         src_x, src_y, src_h = node_positions_rect[src]
         x0 = src_x + node_width
-        y0_bot = node_out_pos[src]
+        y0_bot = link_y0[(src, tgt)]
         y0_top = y0_bot + link_height_src
 
         tgt_x, tgt_y, tgt_h = node_positions_rect[tgt]
         x1 = tgt_x
-        y1_bot = node_in_pos[tgt]
+        y1_bot = link_y1[(src, tgt)]
         y1_top = y1_bot + link_height_tgt
 
         # Cores - usar cores dinâmicas se disponíveis
@@ -411,13 +503,18 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
                 (seg_x1[i], seg_y1_bot[i])
             ]
             all_vertices.append(verts)
-            all_colors.append((*colors[i], 0.7))  # RGBA com alpha
-
-        node_out_pos[src] += link_height_src
-        node_in_pos[tgt] += link_height_tgt
+            all_colors.append((*colors[i], link_alpha))  # RGBA com alpha
 
     # Desenhar links
     if all_vertices:
+        # Glow: camadas largas e translúcidas por trás (efeito neon no escuro)
+        for g in range(link_glow, 0, -1):
+            glow_colors = [(r, gc, b, link_alpha * 0.12) for (r, gc, b, _a) in all_colors]
+            glow_pc = PolyCollection(all_vertices, facecolors=glow_colors,
+                                     edgecolors='none', linewidths=0)
+            glow_pc.set_linewidth(2.5 * g)
+            glow_pc.set_edgecolors(glow_colors)
+            ax.add_collection(glow_pc)
         pc = PolyCollection(all_vertices, facecolors=all_colors, edgecolors='none')
         ax.add_collection(pc)
 
@@ -442,7 +539,7 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
                 (x, y), node_width, h,
                 boxstyle="round,pad=0.02,rounding_size=0.05",
                 facecolor=color,
-                edgecolor='#333333',
+                edgecolor=node_edge_color,
                 linewidth=1.5
             )
             ax.add_patch(rect)
@@ -460,17 +557,24 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
             # Nome do nó
             if layer_idx == 0:
                 ax.text(x - 0.15, y + h / 2, f"{node}",
-                       ha='right', va='center', fontsize=font_size, fontweight='bold')
+                       ha='right', va='center', fontsize=font_size, fontweight='bold',
+                       color=label_color)
             elif layer_idx == n_layers - 1:
                 ax.text(x + node_width + 0.15, y + h / 2, f"{node}",
-                       ha='left', va='center', fontsize=font_size, fontweight='bold')
+                       ha='left', va='center', fontsize=font_size, fontweight='bold',
+                       color=label_color)
             else:
                 ax.text(x + node_width / 2, y + h + 0.15, f"{node}",
-                       ha='center', va='bottom', fontsize=font_size - 1, fontweight='bold')
+                       ha='center', va='bottom', fontsize=font_size - 1, fontweight='bold',
+                       color=label_color)
 
             # Valor dentro do nó
             if h >= min_height_for_inside_text:
-                ax.text(x + node_width / 2, y + h / 2, f"{val:.0f}",
+                if frame_data.node_value_labels and node in frame_data.node_value_labels:
+                    val_text = frame_data.node_value_labels[node]
+                else:
+                    val_text = f"{val:.0f}"
+                ax.text(x + node_width / 2, y + h / 2, val_text,
                        ha='center', va='center', fontsize=font_size - 1,
                        color=text_color, fontweight='bold')
 
@@ -522,12 +626,21 @@ def _render_chunk(args):
     title_bg_alpha = config['title_bg_alpha']
     stacked_mode = config['stacked_mode']
 
+    # Tema (cores) - com defaults claros para retrocompatibilidade
+    bg_color = config.get('bg_color', 'white')
+    label_color = config.get('label_color', '#000000')
+    node_edge_color = config.get('node_edge_color', '#333333')
+    title_text_color = config.get('title_text_color', '#000000')
+    link_alpha = config.get('link_alpha', 0.7)
+    link_glow = config.get('link_glow', 0)
+
     # Criar arquivo de saída para este chunk
     chunk_path = os.path.join(temp_dir, f"chunk_{chunk_id:04d}.mp4")
 
     # Criar figura com mesmas dimensões do original
     fig, ax = plt.subplots(figsize=figsize)
-    fig.patch.set_facecolor('white')
+    fig.patch.set_facecolor(bg_color)
+    ax.set_facecolor(bg_color)
     fig.tight_layout(pad=0.5)
 
     # Obter dimensões reais do canvas
@@ -589,6 +702,7 @@ def _render_chunk(args):
         ax.set_ylim(0, plot_height)
         ax.set_aspect('auto')
         ax.axis('off')
+        ax.set_facecolor(bg_color)
 
         # Margens
         margin_top = plot_height * margin_top_ratio
@@ -597,9 +711,13 @@ def _render_chunk(args):
 
         # Escala (mesma lógica do original)
         if stacked_mode:
-            layer_totals = [sum(frame_data.node_values.get(node, 0) for node in layer_nodes)
-                          for layer_nodes in layers]
-            max_layer_total = max(layer_totals) if layer_totals else 1
+            fixed_layer_max = config.get('fixed_layer_max')
+            if fixed_layer_max:
+                max_layer_total = fixed_layer_max   # escala GLOBAL fixa (crescimento absoluto)
+            else:
+                layer_totals = [sum(frame_data.node_values.get(node, 0) for node in layer_nodes)
+                              for layer_nodes in layers]
+                max_layer_total = max(layer_totals) if layer_totals else 1
             stacked_height = usable_height * bar_height_ratio
             scale = stacked_height / max_layer_total if max_layer_total > 0 else 1
         else:
@@ -635,11 +753,10 @@ def _render_chunk(args):
         for layer_idx, layer_nodes in enumerate(layers):
             for node in layer_nodes:
                 node_layer_idx[node] = layer_idx
-        n_layers = len(layers)
 
         # Escalas de links - CORRIGIDO para nós intermediários
         # Para nós intermediários, usar a MESMA escala para entrada e saída
-        # baseada no max(in, out) para garantir consistência visual
+        # baseada no max(in, out) para garantir consistência visual.
         node_out_scale = {}
         node_in_scale = {}
         for node in node_positions_rect:
@@ -647,11 +764,8 @@ def _render_chunk(args):
             total_in = in_sums.get(node, 0)
             h = node_positions_rect[node][2]
             layer_idx = node_layer_idx.get(node, 0)
-
-            # Para nós intermediários (não primeira nem última camada),
-            # usar o mesmo fator de escala para entrada e saída
             if 0 < layer_idx < n_layers - 1:
-                # Nó intermediário: usar max para escala consistente
+                # Nó intermediário: escala consistente baseada no max(in, out)
                 total_max = max(total_out, total_in, 0.001)
                 node_out_scale[node] = h / total_max if total_out > 0 else 1
                 node_in_scale[node] = h / total_max if total_in > 0 else 1
@@ -660,31 +774,47 @@ def _render_chunk(args):
                 node_out_scale[node] = h / total_out if total_out > 0 else 1
                 node_in_scale[node] = h / total_in if total_in > 0 else 1
 
-        # Posições de saída/entrada
-        node_out_pos = {node: node_positions_rect[node][1] for node in node_positions_rect}
-        node_in_pos = {node: node_positions_rect[node][1] for node in node_positions_rect}
-
         # Construir gradientes (MESMA lógica do original)
         all_vertices = []
         all_colors = []
 
-        sorted_links = sorted(frame_data.links, key=lambda x: (x[0], x[1]))
+        # Empilhar fluxos para MINIMIZAR cruzamentos: saidas ordenadas pela
+        # posicao-Y do destino, entradas pela posicao-Y da origem.
+        def _yc(n):
+            nx, nyb, nh = node_positions_rect[n]
+            return nyb + nh / 2
 
-        for src, tgt, val in sorted_links:
-            if val <= 0 or src not in node_positions_rect or tgt not in node_positions_rect:
-                continue
+        valid_links = [(s, t, v) for (s, t, v) in frame_data.links
+                       if v > 0 and s in node_positions_rect and t in node_positions_rect]
 
+        link_y0 = {}
+        node_out_pos = {node: node_positions_rect[node][1] for node in node_positions_rect}
+        for src in node_positions_rect:
+            outs = sorted([l for l in valid_links if l[0] == src], key=lambda l: _yc(l[1]))
+            for s, t, v in outs:
+                link_y0[(s, t)] = node_out_pos[s]
+                node_out_pos[s] += v * node_out_scale.get(s, 1)
+
+        link_y1 = {}
+        node_in_pos = {node: node_positions_rect[node][1] for node in node_positions_rect}
+        for tgt in node_positions_rect:
+            ins = sorted([l for l in valid_links if l[1] == tgt], key=lambda l: _yc(l[0]))
+            for s, t, v in ins:
+                link_y1[(s, t)] = node_in_pos[t]
+                node_in_pos[t] += v * node_in_scale.get(t, 1)
+
+        for src, tgt, val in sorted(valid_links, key=lambda x: (x[0], x[1])):
             link_height_src = val * node_out_scale.get(src, 1)
             link_height_tgt = val * node_in_scale.get(tgt, 1)
 
             src_x, src_y, src_h = node_positions_rect[src]
             x0 = src_x + node_width
-            y0_bot = node_out_pos[src]
+            y0_bot = link_y0[(src, tgt)]
             y0_top = y0_bot + link_height_src
 
             tgt_x, tgt_y, tgt_h = node_positions_rect[tgt]
             x1 = tgt_x
-            y1_bot = node_in_pos[tgt]
+            y1_bot = link_y1[(src, tgt)]
             y1_top = y1_bot + link_height_tgt
 
             # Cores (use dynamic colors if available, otherwise use static)
@@ -717,13 +847,16 @@ def _render_chunk(args):
                     (seg_x1[i], seg_y1_bot[i])
                 ]
                 all_vertices.append(verts)
-                all_colors.append((*colors[i], 0.7))  # RGBA com alpha
-
-            node_out_pos[src] += link_height_src
-            node_in_pos[tgt] += link_height_tgt
+                all_colors.append((*colors[i], link_alpha))  # RGBA com alpha
 
         # Desenhar links
         if all_vertices:
+            # Glow: camadas largas e translucidas atras (efeito neon no escuro)
+            for g in range(link_glow, 0, -1):
+                glow_colors = [(r, gc, b, link_alpha * 0.12) for (r, gc, b, _a) in all_colors]
+                glow_pc = PolyCollection(all_vertices, facecolors=glow_colors,
+                                         edgecolors=glow_colors, linewidths=2.5 * g)
+                ax.add_collection(glow_pc)
             pc = PolyCollection(all_vertices, facecolors=all_colors, edgecolors='none')
             ax.add_collection(pc)
 
@@ -747,7 +880,7 @@ def _render_chunk(args):
                     (x, y), node_width, h,
                     boxstyle="round,pad=0.02,rounding_size=0.05",
                     facecolor=color,
-                    edgecolor='#333333',
+                    edgecolor=node_edge_color,
                     linewidth=1.5
                 )
                 ax.add_patch(rect)
@@ -762,29 +895,152 @@ def _render_chunk(args):
                 except:
                     text_color = '#000000'
 
-                # Nome do nó
-                if layer_idx == 0:
-                    ax.text(x - 0.15, y + h / 2, f"{node}",
-                           ha='right', va='center', fontsize=font_size, fontweight='bold')
-                elif layer_idx == n_layers - 1:
-                    ax.text(x + node_width + 0.15, y + h / 2, f"{node}",
-                           ha='left', va='center', fontsize=font_size, fontweight='bold')
+                # Texto do valor (rotulo customizado, ex: "(5)" para negativos)
+                if frame_data.node_value_labels and node in frame_data.node_value_labels:
+                    val_text = frame_data.node_value_labels[node]
                 else:
-                    ax.text(x + node_width / 2, y + h + 0.15, f"{node}",
-                           ha='center', va='bottom', fontsize=font_size - 1, fontweight='bold')
+                    val_text = f"{val:.0f}"
+                fits = h >= min_height_for_inside_text
+                # Se a barra e' pequena demais, anexa o valor ao NOME (fora da barra),
+                # garantindo que negativos como "(5)" fiquem sempre visiveis.
+                name_txt = f"{node}" if fits else f"{node}  {val_text}"
 
-                # Valor dentro do nó
-                if h >= min_height_for_inside_text:
-                    ax.text(x + node_width / 2, y + h / 2, f"{val:.0f}",
+                # Nome do nó
+                if node == config.get('yaxis_node'):
+                    # Nó com eixo Y: nome vai pro topo pra liberar espaco do eixo a' esquerda
+                    ax.text(x + node_width / 2, y + h + 0.15, name_txt,
+                           ha='center', va='bottom', fontsize=font_size, fontweight='bold',
+                           color=label_color)
+                elif layer_idx == 0:
+                    ax.text(x - 0.15, y + h / 2, name_txt,
+                           ha='right', va='center', fontsize=font_size, fontweight='bold',
+                           color=label_color)
+                elif layer_idx == n_layers - 1:
+                    ax.text(x + node_width + 0.15, y + h / 2, name_txt,
+                           ha='left', va='center', fontsize=font_size, fontweight='bold',
+                           color=label_color)
+                else:
+                    ax.text(x + node_width / 2, y + h + 0.15, name_txt,
+                           ha='center', va='bottom', fontsize=font_size - 1, fontweight='bold',
+                           color=label_color)
+
+                # Valor dentro do nó (apenas quando cabe)
+                if fits:
+                    ax.text(x + node_width / 2, y + h / 2, val_text,
                            ha='center', va='center', fontsize=font_size - 1,
                            color=text_color, fontweight='bold')
+
+        # Eixo Y dinamico na 1a layer (mostra a dimensao em $; rotulos evoluem no tempo).
+        # Discreto, mas visivel: linha + ticks "redondos" a' esquerda do no'.
+        yaxis_node = config.get('yaxis_node')
+        if yaxis_node and yaxis_node in node_positions_rect and frame_data.node_values.get(yaxis_node, 0) > 0:
+            yx, yyb, yh = node_positions_rect[yaxis_node]
+            yval = frame_data.node_values[yaxis_node]
+            ysuf = config.get('yaxis_suffix', '')
+            raw = yval / 4.0
+            mag = 10 ** np.floor(np.log10(raw)) if raw > 0 else 1.0
+            step = next((m * mag for m in (1, 2, 2.5, 5, 10) if raw <= m * mag), 10 * mag)
+            axis_x = yx - 0.14
+            ax.plot([axis_x, axis_x], [yyb, yyb + yh],
+                    color=label_color, lw=1.0, alpha=0.40, zorder=3)
+            tv = 0.0
+            while tv <= yval + 1e-9:
+                ty = yyb + yh * (tv / yval)
+                ax.plot([axis_x - 0.07, axis_x], [ty, ty],
+                        color=label_color, lw=1.0, alpha=0.40, zorder=3)
+                if tv == 0:
+                    lab = "$0"
+                elif tv >= 10:
+                    lab = f"${tv:.0f}{ysuf}"
+                else:
+                    lab = f"${tv:.1f}{ysuf}"
+                ax.text(axis_x - 0.11, ty, lab, color=label_color, fontsize=font_size - 3,
+                        alpha=0.55, ha='right', va='center', zorder=3)
+                tv += step
 
         # Título
         display_title = title if title else ""
         ax.text(plot_width / 2, plot_height * 0.95,
                f"{display_title}\n{frame_data.time_label}" if display_title else frame_data.time_label,
                ha='center', va='top', fontsize=title_fontsize, fontweight='bold',
+               color=title_text_color,
                bbox=dict(boxstyle='round,pad=0.3', facecolor=title_bg_color, alpha=title_bg_alpha))
+
+        # Overlay de crescimento (rodape): mini-grafico da acao + big number discreto
+        overlay_series = config.get('overlay_series')
+        if overlay_series:
+            ov_color = config.get('overlay_color', '#33E08A')
+            ov_label = config.get('overlay_label', '')
+            ov_suffix = config.get('overlay_value_suffix', '')
+            n_ov = len(overlay_series)
+            footer_top = plot_height * margin_bottom_ratio   # rodape = [0, footer_top]
+
+            # Alinhado horizontalmente com o Sankey (do Revenue ate' o ultimo no',
+            # parando na borda esquerda do ultimo no' p/ deixar espaco ao big number)
+            bx0 = layer_x_positions[0]
+            bx1 = layer_x_positions[n_layers - 1]
+            by0, by1 = footer_top * 0.34, footer_top * 0.80
+
+            p = max(0.0, min(frame_data.progress, n_ov - 1))
+            k = int(np.floor(p))
+            if k < n_ov - 1:
+                frac = p - k
+                cur_val = overlay_series[k] + (overlay_series[k + 1] - overlay_series[k]) * frac
+            else:
+                cur_val = overlay_series[-1]
+
+            # Estilo "bar chart race": a curva SEMPRE preenche a largura (tamanho fixo),
+            # o eixo X (tempo) evolui (janela 0..agora remapeada pra [bx0,bx1]) e o eixo Y
+            # e' dinamico (running max). O "agora" fica sempre na ponta direita.
+            def _sx(idx):
+                return bx0 + (bx1 - bx0) * (idx / p if p > 0 else 1.0)
+
+            seen = overlay_series[:k + 1] + [cur_val]
+            smax = max(seen) or 1
+
+            def _sy(v):
+                return by0 + (by1 - by0) * (max(v, 0) / smax)
+
+            xs = [_sx(j) for j in range(k + 1)] + [bx1]
+            ys = [_sy(overlay_series[j]) for j in range(k + 1)] + [_sy(cur_val)]
+            cx, cy = bx1, _sy(cur_val)
+
+            ax.plot([bx0, bx1], [by0, by0], color=label_color, lw=0.8, alpha=0.22, zorder=5)
+            ax.fill_between(xs, by0, ys, color=ov_color, alpha=0.16, zorder=6)
+            ax.plot(xs, ys, color=ov_color, lw=2.2, alpha=0.95, zorder=7)
+            ax.scatter([cx], [cy], s=46, color='#FFFFFF', zorder=8)
+            ax.scatter([cx], [cy], s=20, color=ov_color, zorder=9)
+            if ov_label:
+                ax.text(bx0, by1 + footer_top * 0.16, ov_label, color=label_color,
+                        fontsize=font_size - 2, alpha=0.6, va='bottom', ha='left')
+            # Topo do eixo Y dinamico = maxima ate agora (rescala)
+            ytop = (f"${smax:.0f}{ov_suffix}" if smax >= 10 else f"${smax:.1f}{ov_suffix}")
+            ax.text(bx0 - plot_width * 0.006, by1, ytop, color=ov_color,
+                    fontsize=font_size - 3, alpha=0.5, va='center', ha='right')
+
+            # Eixo X temporal: marca o 1o trimestre de cada ano ate' agora (comprime no tempo)
+            xlabels = config.get('overlay_x_labels')
+            if xlabels:
+                prev_year = None
+                for j in range(k + 1):
+                    yr = str(xlabels[j]).split()[0]
+                    if yr != prev_year:
+                        prev_year = yr
+                        tx = _sx(j)
+                        ax.plot([tx, tx], [by0, by0 - footer_top * 0.06],
+                                color=label_color, lw=0.8, alpha=0.30, zorder=5)
+                        ax.text(tx, by0 - footer_top * 0.10, yr, color=label_color,
+                                fontsize=font_size - 4, alpha=0.5, ha='center', va='top', zorder=5)
+
+            # Big number ancorando o canto direito do rodape + rotulo NVDA
+            big = (f"${cur_val:.0f}{ov_suffix}" if cur_val >= 10
+                   else f"${cur_val:.1f}{ov_suffix}")
+            ax.text(plot_width * 0.985, footer_top * 0.42, big,
+                    color=ov_color, fontsize=title_fontsize * 2.4, fontweight='bold',
+                    alpha=0.26, ha='right', va='center', zorder=4)
+            ax.text(plot_width * 0.985, footer_top * 0.88, "NVDA",
+                    color=label_color, fontsize=font_size - 1, fontweight='bold',
+                    alpha=0.55, ha='right', va='center', zorder=4)
 
         # Capturar frame
         fig.canvas.draw()
@@ -943,15 +1199,23 @@ class SankeyRaceMultiLayerParallel:
         return positions
 
     def _compute_stacked_positions(self, node_values, plot_height, bar_height_ratio,
-                                   margin_top_ratio, margin_bottom_ratio, gap):
-        """Calcula posições Y no modo stacked (empilhado, sem ranking)."""
+                                   margin_top_ratio, margin_bottom_ratio, gap,
+                                   fixed_max=None):
+        """Calcula posições Y no modo stacked (empilhado, sem ranking).
+
+        fixed_max: se fornecido, usa essa escala GLOBAL fixa em vez do máximo do
+        frame -> barras crescem em valor absoluto entre frames (ex: explosão da receita).
+        """
         margin_top = plot_height * margin_top_ratio
         margin_bottom = plot_height * margin_bottom_ratio
         usable_height = plot_height - margin_top - margin_bottom
 
-        layer_totals = [sum(node_values.get(node, 0) for node in layer_nodes)
-                       for layer_nodes in self.layers]
-        max_layer_total = max(layer_totals) if layer_totals else 1
+        if fixed_max is not None:
+            max_layer_total = fixed_max
+        else:
+            layer_totals = [sum(node_values.get(node, 0) for node in layer_nodes)
+                           for layer_nodes in self.layers]
+            max_layer_total = max(layer_totals) if layer_totals else 1
         stacked_height = usable_height * bar_height_ratio
         scale = stacked_height / max_layer_total if max_layer_total > 0 else 1
 
@@ -1066,6 +1330,17 @@ class SankeyRaceMultiLayerParallel:
                     percentile = rank / n if n > 0 else 0.5
                     colors[node] = get_dynamic_color(percentile, 0, 1, colormap)
 
+        elif mode == DynamicColorMode.INTENSITY:
+            # Keep each node's base hue (self.node_colors), scale brightness by value
+            # normalized GLOBALLY (sqrt-compressed so small early values stay visible).
+            if global_max is None:
+                global_max = max(node_values.values()) if node_values else 1
+            gmax = global_max if global_max > 0 else 1
+            for node in node_values:
+                base = self.node_colors.get(node, '#888888')
+                factor = (max(0.0, node_values[node]) / gmax) ** 0.5
+                colors[node] = scale_brightness(base, factor)
+
         return colors
 
     def _compute_stacked_ranking_positions(self, node_values, plot_height, bar_height_ratio,
@@ -1105,7 +1380,9 @@ class SankeyRaceMultiLayerParallel:
                            margin_top_ratio, margin_bottom_ratio, stacked_gap, ascending,
                            mode='stacked_ranking', global_max=None,
                            dynamic_color_mode: Union[DynamicColorMode, str] = DynamicColorMode.STATIC,
-                           dynamic_colormap: Union[ColorPalette, str, List[str]] = 'RdYlGn'):
+                           dynamic_colormap: Union[ColorPalette, str, List[str]] = 'RdYlGn',
+                           node_value_labels_per_frame: Optional[List[Dict[str, str]]] = None,
+                           fixed_layer_max: Optional[float] = None):
         """Pré-computa todos os frames interpolados.
 
         Args:
@@ -1125,10 +1402,10 @@ class SankeyRaceMultiLayerParallel:
 
         use_dynamic_colors = dynamic_color_mode != DynamicColorMode.STATIC
 
-        # Pre-compute global min/max for GLOBAL_VALUE mode
+        # Pre-compute global min/max for GLOBAL_VALUE / INTENSITY modes
         global_min_val = None
         global_max_val = None
-        if dynamic_color_mode == DynamicColorMode.GLOBAL_VALUE:
+        if dynamic_color_mode in (DynamicColorMode.GLOBAL_VALUE, DynamicColorMode.INTENSITY):
             all_values = []
             for frame in self.frames:
                 values = self._compute_node_values(frame['links'])
@@ -1154,7 +1431,8 @@ class SankeyRaceMultiLayerParallel:
             elif mode == 'stacked':
                 positions = self._compute_stacked_positions(
                     values, plot_height, bar_height_ratio,
-                    margin_top_ratio, margin_bottom_ratio, stacked_gap
+                    margin_top_ratio, margin_bottom_ratio, stacked_gap,
+                    fixed_max=fixed_layer_max
                 )
             else:  # fixed
                 positions = self._compute_fixed_positions(
@@ -1216,16 +1494,25 @@ class SankeyRaceMultiLayerParallel:
                         cb = colors_b.get(node, '#888888')
                         interp_colors[node] = interpolate_color(ca, cb, t)
 
+                # Snap value labels to the same data frame as the time label
+                interp_labels = None
+                if node_value_labels_per_frame:
+                    interp_labels = (node_value_labels_per_frame[i] if t < 0.5
+                                     else node_value_labels_per_frame[i + 1])
+
                 interpolated.append(FrameData(
                     time_label=frame_a['time_label'] if t < 0.5 else frame_b['time_label'],
                     links=interp_links,
                     node_positions=interp_pos,
                     node_values=interp_values,
-                    node_colors=interp_colors
+                    node_colors=interp_colors,
+                    node_value_labels=interp_labels,
+                    progress=i + t
                 ))
 
         # Frames de hold
         last_frame, last_values, last_pos, last_colors = data_info[-1]
+        last_labels = node_value_labels_per_frame[-1] if node_value_labels_per_frame else None
         remaining = total_frames - len(interpolated)
         for _ in range(remaining):
             interpolated.append(FrameData(
@@ -1233,7 +1520,9 @@ class SankeyRaceMultiLayerParallel:
                 links=last_frame['links'],
                 node_positions=last_pos,
                 node_values=last_values,
-                node_colors=last_colors
+                node_colors=last_colors,
+                node_value_labels=last_labels,
+                progress=float(n_data_frames - 1)
             ))
 
         return interpolated
@@ -1261,9 +1550,35 @@ class SankeyRaceMultiLayerParallel:
                 n_workers: int = None,
                 n_segments: int = DEFAULT_GRADIENT_SEGMENTS,
                 dynamic_color_mode: Union[DynamicColorMode, str] = "static",
-                dynamic_colormap: Union[ColorPalette, str, List[str]] = "RdYlGn"):
+                dynamic_colormap: Union[ColorPalette, str, List[str]] = "RdYlGn",
+                theme: str = "light",
+                bg_color: str = None,
+                label_color: str = None,
+                node_edge_color: str = None,
+                title_text_color: str = None,
+                link_alpha: float = 0.7,
+                link_glow: int = 0,
+                node_value_labels_per_frame: Optional[List[Dict[str, str]]] = None,
+                absolute_scale: bool = False,
+                overlay_series: Optional[List[float]] = None,
+                overlay_label: str = None,
+                overlay_color: str = "#33E08A",
+                overlay_value_suffix: str = "",
+                overlay_x_labels: Optional[List[str]] = None,
+                audio_path: str = None,
+                audio_url: str = None,
+                audio_start: float = 0.0,
+                audio_fade: float = 1.5,
+                yaxis_node: str = None,
+                yaxis_suffix: str = ""):
         """
         Gera animação usando múltiplos processos em paralelo.
+
+        overlay_series: uma lista de valores (um por frame de dados) desenhada como
+            um mini-grafico de area que cresce ao longo do tempo, no rodape, mais um
+            "big number" discreto no canto. Util para mostrar crescimento (ex: receita).
+        overlay_label: rotulo do overlay (ex: "Revenue / quarter").
+        overlay_color: cor do overlay.
 
         Args:
             ranking_mode: Se True, ordena nós por valor
@@ -1297,6 +1612,28 @@ class SankeyRaceMultiLayerParallel:
         if not self.frames:
             raise ValueError("Nenhum frame adicionado.")
 
+        # Audio via YouTube: resolve a URL para um mp3 local ANTES de renderizar
+        # (assim falha cedo se algo der errado, sem desperdicar o render).
+        if audio_url and not audio_path:
+            print(f"Baixando audio do YouTube: {audio_url}")
+            audio_path = youtube_to_mp3(audio_url)
+            print(f"  -> {audio_path}")
+
+        # Presets de tema (sobrescreviveis por kwargs explicitos)
+        if theme == "dark":
+            _preset = dict(bg_color="#0a0a12", label_color="#EAEAF2",
+                           node_edge_color="#1a1a28", title_text_color="#FFFFFF",
+                           title_bg_color="#15151f")
+        else:  # light
+            _preset = dict(bg_color="white", label_color="#000000",
+                           node_edge_color="#333333", title_text_color="#000000",
+                           title_bg_color=title_bg_color)
+        bg_color = bg_color or _preset["bg_color"]
+        label_color = label_color or _preset["label_color"]
+        node_edge_color = node_edge_color or _preset["node_edge_color"]
+        title_text_color = title_text_color or _preset["title_text_color"]
+        title_bg_color = _preset["title_bg_color"] if theme == "dark" else title_bg_color
+
         # Determinar modo
         if stacked_mode and ranking_mode:
             mode = 'stacked_ranking'
@@ -1322,6 +1659,16 @@ class SankeyRaceMultiLayerParallel:
         plot_width, plot_height = figsize
         global_max = self._get_global_max()
         total_frames = int(fps * duration_seconds)
+
+        # Escala global fixa (crescimento absoluto entre frames), só no modo stacked
+        fixed_layer_max = None
+        if absolute_scale and mode == 'stacked':
+            flm = 0.0
+            for frame in self.frames:
+                vals = self._compute_node_values(frame['links'])
+                for layer_nodes in self.layers:
+                    flm = max(flm, sum(vals.get(n, 0) for n in layer_nodes))
+            fixed_layer_max = flm if flm > 0 else None
 
         # Parse dynamic color mode
         if isinstance(dynamic_color_mode, str):
@@ -1351,7 +1698,9 @@ class SankeyRaceMultiLayerParallel:
             margin_top, margin_bottom, stacked_gap, ascending,
             mode=mode, global_max=global_max,
             dynamic_color_mode=dynamic_color_mode_enum,
-            dynamic_colormap=dynamic_colormap
+            dynamic_colormap=dynamic_colormap,
+            node_value_labels_per_frame=node_value_labels_per_frame,
+            fixed_layer_max=fixed_layer_max
         )
         print(f"  Pre-computacao: {time.time() - t0:.2f}s")
 
@@ -1393,6 +1742,20 @@ class SankeyRaceMultiLayerParallel:
             'title_bg_color': title_bg_color,
             'title_bg_alpha': title_bg_alpha,
             'stacked_mode': stacked_mode,
+            'bg_color': bg_color,
+            'label_color': label_color,
+            'node_edge_color': node_edge_color,
+            'title_text_color': title_text_color,
+            'link_alpha': link_alpha,
+            'link_glow': link_glow,
+            'fixed_layer_max': fixed_layer_max,
+            'overlay_series': overlay_series,
+            'overlay_label': overlay_label,
+            'overlay_color': overlay_color,
+            'overlay_value_suffix': overlay_value_suffix,
+            'overlay_x_labels': overlay_x_labels,
+            'yaxis_node': yaxis_node,
+            'yaxis_suffix': yaxis_suffix,
         }
 
         # Preparar argumentos
@@ -1421,13 +1784,16 @@ class SankeyRaceMultiLayerParallel:
             for path in chunk_paths:
                 f.write(f"file '{path}'\n")
 
+        # Concatena os chunks num video (mudo). Se houver audio, faz isso num
+        # arquivo temporario e depois mixa a trilha; senao, ja sai no output_path.
+        silent_path = os.path.join(temp_dir, "video_silent.mp4") if audio_path else output_path
         concat_cmd = [
             'ffmpeg', '-y',
             '-f', 'concat',
             '-safe', '0',
             '-i', list_path,
             '-c', 'copy',
-            output_path
+            silent_path
         ]
 
         result = subprocess.run(concat_cmd, capture_output=True)
@@ -1436,6 +1802,32 @@ class SankeyRaceMultiLayerParallel:
             print(f"Erro na concatenacao: {result.stderr.decode()}")
 
         print(f"  Concatenacao: {time.time() - t0_concat:.2f}s")
+
+        # Mixar trilha de audio (MP3) se fornecida
+        if audio_path:
+            if not os.path.exists(audio_path):
+                print(f"AVISO: audio nao encontrado ({audio_path}); salvando video sem som.")
+                shutil.copyfile(silent_path, output_path)
+            else:
+                video_dur = total_frames / fps
+                fade_out_st = max(0.0, video_dur - audio_fade)
+                afade = f"afade=t=in:st=0:d={audio_fade},afade=t=out:st={fade_out_st}:d={audio_fade}"
+                mux_cmd = [
+                    'ffmpeg', '-y',
+                    '-i', silent_path,
+                    '-ss', str(audio_start), '-i', audio_path,  # comeca a musica em audio_start
+                    '-map', '0:v', '-map', '1:a',
+                    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+                    '-af', afade,
+                    '-t', str(video_dur), '-shortest',
+                    output_path
+                ]
+                mux = subprocess.run(mux_cmd, capture_output=True)
+                if mux.returncode != 0:
+                    print(f"Erro ao mixar audio: {mux.stderr.decode()[-800:]}")
+                    shutil.copyfile(silent_path, output_path)
+                else:
+                    print(f"  Audio mixado: {os.path.basename(audio_path)} (inicio em {audio_start}s)")
 
         # Limpar
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -1465,13 +1857,29 @@ class SankeyRaceMultiLayerParallel:
                    stacked_mode: bool = True,
                    stacked_gap: float = 0.1,
                    ascending: bool = False,
-                   n_segments: int = DEFAULT_GRADIENT_SEGMENTS):
+                   n_segments: int = DEFAULT_GRADIENT_SEGMENTS,
+                   theme: str = "light",
+                   bg_color: str = None,
+                   label_color: str = None,
+                   node_edge_color: str = None,
+                   title_text_color: str = None,
+                   link_alpha: float = 0.7,
+                   link_glow: int = 0,
+                   node_value_labels: Dict[str, str] = None):
         """
         Salva um frame unico como imagem estatica (PNG, PDF, SVG).
 
         Args:
             output_path: Caminho do arquivo de saida (.png, .pdf, .svg)
             frame_index: Indice do frame a ser salvo (0 = primeiro)
+            theme: "light" (padrao) ou "dark". Define um preset de cores de fundo,
+                   rotulos e borda. Pode ser sobrescrito por bg_color/label_color/etc.
+            bg_color: Cor de fundo da figura (sobrescreve o preset do tema)
+            label_color: Cor dos rotulos de nome dos nos
+            node_edge_color: Cor da borda dos nos
+            title_text_color: Cor do texto do titulo
+            link_alpha: Opacidade base dos links (0-1)
+            link_glow: Camadas de brilho neon atras dos links (0 = nenhum)
             title: Titulo do grafico
             figsize: Tamanho da figura (largura, altura)
             dpi: Resolucao da imagem
@@ -1488,6 +1896,21 @@ class SankeyRaceMultiLayerParallel:
 
         if frame_index >= len(self.frames):
             raise ValueError(f"frame_index {frame_index} invalido. Total de frames: {len(self.frames)}")
+
+        # Presets de tema (sobrescreviveis por kwargs explicitos)
+        if theme == "dark":
+            preset = dict(bg_color="#0a0a12", label_color="#EAEAF2",
+                          node_edge_color="#1a1a28", title_text_color="#FFFFFF",
+                          title_bg_color="#15151f")
+        else:  # light
+            preset = dict(bg_color="white", label_color="#000000",
+                          node_edge_color="#333333", title_text_color="#000000",
+                          title_bg_color=title_bg_color)
+        bg_color = bg_color or preset["bg_color"]
+        label_color = label_color or preset["label_color"]
+        node_edge_color = node_edge_color or preset["node_edge_color"]
+        title_text_color = title_text_color or preset["title_text_color"]
+        title_bg_color = preset["title_bg_color"] if theme == "dark" else title_bg_color
 
         # Determinar modo
         if stacked_mode and ranking_mode:
@@ -1530,7 +1953,8 @@ class SankeyRaceMultiLayerParallel:
             time_label=frame['time_label'],
             links=frame['links'],
             node_positions=positions,
-            node_values=values
+            node_values=values,
+            node_value_labels=node_value_labels
         )
 
         # Criar figura
@@ -1538,14 +1962,16 @@ class SankeyRaceMultiLayerParallel:
         ax.set_xlim(-padding, plot_width + padding)
         ax.set_ylim(0, plot_height)
         ax.axis('off')
-        ax.set_facecolor('white')
-        fig.patch.set_facecolor('white')
+        ax.set_facecolor(bg_color)
+        fig.patch.set_facecolor(bg_color)
 
         # Renderizar frame
         render_frame_high_quality(
             ax, frame_data, self.layers, self.node_colors,
             plot_width, plot_height, node_width, font_size,
-            n_segments, bar_height_ratio, mode in ['stacked_ranking', 'stacked']
+            n_segments, bar_height_ratio, mode in ['stacked_ranking', 'stacked'],
+            label_color=label_color, node_edge_color=node_edge_color,
+            link_alpha=link_alpha, link_glow=link_glow
         )
 
         # Titulo
@@ -1555,14 +1981,14 @@ class SankeyRaceMultiLayerParallel:
             ax.text(
                 plot_width / 2, plot_height * 0.98, full_title,
                 fontsize=title_fontsize, ha='center', va='top',
-                fontweight='bold',
+                fontweight='bold', color=title_text_color,
                 bbox=dict(boxstyle='round,pad=0.4', facecolor=title_bg_color,
                           alpha=title_bg_alpha, edgecolor='none')
             )
 
         plt.tight_layout()
         plt.savefig(output_path, dpi=dpi, bbox_inches='tight',
-                    facecolor='white', edgecolor='none')
+                    facecolor=bg_color, edgecolor='none')
         plt.close(fig)
 
         print(f"Frame salvo em: {output_path}")
