@@ -120,7 +120,10 @@ def fiscal_label(period: str) -> str:
     """Fiscal-quarter label for NVIDIA (fiscal year ends in late January).
 
     A period ending in Jan/Feb is Q4 of that fiscal year; Mar-May -> Q1 of FY+1,
-    Jun-Aug -> Q2, Sep-Dec -> Q3. Labels sort chronologically as plain strings.
+    Jun-Aug -> Q2, Sep-Dec -> Q3. The calendar month/year of the period END is
+    appended so the (fiscal) "FY2027" reads clearly as a CLOSED quarter rather
+    than a projection -- e.g. "FY2027 Q1 (Apr 2026)". Sorts chronologically as a
+    plain string (the FY/Q prefix dominates the comparison).
     """
     y, m, _ = (int(x) for x in period.split("-"))
     if m <= 2:
@@ -131,7 +134,9 @@ def fiscal_label(period: str) -> str:
         fy, q = y + 1, 2
     else:
         fy, q = y + 1, 3
-    return f"FY{fy} Q{q}"
+    mon = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")[m - 1]
+    return f"FY{fy} Q{q} ({mon} {y})"
 
 
 def build(refresh: bool = False) -> pd.DataFrame:
