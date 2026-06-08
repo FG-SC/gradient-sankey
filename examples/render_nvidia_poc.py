@@ -3,7 +3,7 @@ with accounting-style (parentheses) labels for negative figures."""
 import sys, os
 import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from sankey_race_multi_layers_parallel import SankeyRaceMultiLayerParallel
+from gradient_sankey import SankeyRaceMultiLayerParallel
 from nvidia_dre import build, to_flows
 
 HERE = os.path.dirname(os.path.abspath(__file__))

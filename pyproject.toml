@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gradient-sankey"
+version = "1.1.0"
+description = "Animated, true-gradient Sankey diagrams with themes, overlays, dynamic colors and audio."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+authors = [{ name = "Felipe Gabriel" }]
+keywords = ["sankey", "animation", "visualization", "matplotlib", "gradient", "dataviz"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "matplotlib>=3.7.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+]
+
+[project.optional-dependencies]
+# Data sourcing used by some examples (SEC EDGAR scrape + stock-price overlay)
+finance = ["requests>=2.28.0", "yfinance>=0.2.0"]
+# Background music from a YouTube URL (animate(audio_url=...)); also needs FFmpeg
+audio = ["yt-dlp>=2024.1.0"]
+# Everything optional, plus the test toolchain
+all = ["requests>=2.28.0", "yfinance>=0.2.0", "yt-dlp>=2024.1.0"]
+dev = ["pytest>=7.0", "requests>=2.28.0", "yfinance>=0.2.0", "yt-dlp>=2024.1.0"]
+
+[project.urls]
+Homepage = "https://github.com/FG-SC/gradient-sankey"
+Repository = "https://github.com/FG-SC/gradient-sankey"
+Changelog = "https://github.com/FG-SC/gradient-sankey/blob/main/CHANGELOG.md"
+
+# Single-module distribution (no package directory)
+[tool.hatch.build.targets.wheel]
+include = ["gradient_sankey.py"]
+
+[tool.hatch.build.targets.sdist]
+include = ["gradient_sankey.py", "README.md", "CHANGELOG.md", "LICENSE", "examples/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: tests that render video via FFmpeg",
+    "ffmpeg: tests that require the ffmpeg binary on PATH",
+]
+addopts = "-m 'not slow'"
+
+# Note: FFmpeg is a system dependency (not pip-installable) required for video/audio export.

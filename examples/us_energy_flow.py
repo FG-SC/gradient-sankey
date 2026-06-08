@@ -20,7 +20,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sankey_race_multi_layers_parallel import (
+from gradient_sankey import (
     SankeyRaceMultiLayerParallel,
     ColorPalette,
     get_palette_colors

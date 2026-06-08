@@ -47,6 +47,17 @@ Jump to [the feature guide](#feature-guide) or the [full NVIDIA example](#full-e
 ```bash
 git clone https://github.com/FG-SC/gradient-sankey.git
 cd gradient-sankey
+
+# Core only (build + render animations):
+pip install -e .
+
+# With optional extras used by some examples:
+pip install -e ".[finance,audio]"   # finance = requests + yfinance, audio = yt-dlp
+```
+
+Or just the core dependencies without installing the package:
+
+```bash
 pip install -r requirements.txt
 ```
 
@@ -71,7 +82,7 @@ pip install -r requirements.txt
 
 ```python
 import pandas as pd
-from sankey_race_multi_layers_parallel import SankeyRaceMultiLayerParallel
+from gradient_sankey import SankeyRaceMultiLayerParallel
 
 df = pd.DataFrame([
     {"year": 2024, "source": "Coal",        "target": "Electricity", "value": 24},
@@ -140,7 +151,7 @@ The big one. Parameters grouped by purpose:
 
 **Value axis** — `yaxis_node`, `yaxis_suffix`.
 
-**Time‑series overlay** — `overlay_series`, `overlay_label`, `overlay_color`, `overlay_value_suffix`, `overlay_x_labels`.
+**Time‑series overlay** — `overlay_series`, `overlay_label`, `overlay_color`, `overlay_value_suffix`, `overlay_x_labels`, `overlay_badge` (corner tag, e.g. a ticker like `"NVDA"`).
 
 **Audio** — `audio_path`, `audio_url`, `audio_start`, `audio_fade`.
 
@@ -303,7 +314,7 @@ sankey.animate(
 The audio is faded in/out and trimmed to the video length. You can also download a track yourself:
 
 ```python
-from sankey_race_multi_layers_parallel import youtube_to_mp3
+from gradient_sankey import youtube_to_mp3
 path = youtube_to_mp3("https://youtu.be/WITxo7OfMVM", out_dir="music")
 ```
 
@@ -342,7 +353,7 @@ python examples/render_nvidia_reel.py --start-year 2015 --duration 45 \
 Three ways to specify colors, all interpolated continuously:
 
 ```python
-from sankey_race_multi_layers_parallel import ColorPalette, get_palette_colors
+from gradient_sankey import ColorPalette, get_palette_colors
 
 get_palette_colors(ColorPalette.VIRIDIS, n_colors=5)        # built-in enum
 get_palette_colors("RdYlGn", n_colors=10)                   # any matplotlib colormap
@@ -382,19 +393,21 @@ Tips: lower `quality` or `fps` while iterating; raise them only for the final re
 ## Project structure
 
 ```
-animated-sankey-flow/
-├── sankey_race_multi_layers_parallel.py   # the library (all features)
+gradient-sankey/
+├── gradient_sankey.py        # the library (all features, single module)
+├── pyproject.toml            # packaging (core deps + [finance]/[audio] extras)
+├── requirements.txt          # core deps only
 ├── examples/
-│   ├── nvidia_dre.py                       # SEC EDGAR scraper -> P&L flows
-│   ├── render_nvidia_reel.py               # full reel (CLI: --start-year/--duration/--audio[-url]/--audio-start)
-│   ├── render_nvidia_poc.py                # single static frame
-│   ├── us_energy_flow.py                    # conservative-flow example
-│   ├── company_financials.py               # non-conservative (P&L) example
-│   └── music/                               # downloaded soundtracks
-├── assets/                                  # gifs / images for docs
-├── requirements.txt
-├── README.md
-└── LICENSE
+│   ├── gallery.py            # feature cookbook (inputs, palettes, modes, dynamic colors)
+│   ├── nvidia_dre.py         # SEC EDGAR scraper -> P&L flows (cached to nvidia_dre_wide.csv)
+│   ├── nvidia_dre.csv        # committed flows (reproducible/offline fallback)
+│   ├── render_nvidia_reel.py # full reel (CLI: --start-year/--duration/--audio[-url]/--refresh)
+│   ├── render_nvidia_poc.py  # single static frame
+│   ├── us_energy_flow.py     # conservative-flow example (+ shipped demo .mp4)
+│   └── company_financials.py # non-conservative (P&L) example
+├── tests/                    # pytest suite (run `pytest`; render tests need ffmpeg)
+├── assets/                   # gifs / images for docs
+├── README.md  ·  CHANGELOG.md  ·  LICENSE
 ```
 
 ---

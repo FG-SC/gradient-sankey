@@ -1,16 +1,14 @@
-# Animated Sankey Flow - Dependencies
+# gradient-sankey - core dependencies
 # ====================================
+# These are all you need to build and render animations.
+# For a proper install (with optional extras) prefer:  pip install -e .[finance,audio]
 
-# Core (required)
 matplotlib>=3.7.0
 pandas>=2.0.0
 numpy>=1.24.0
 
-# Optional - data sourcing in examples/
-requests>=2.28.0      # SEC EDGAR / generic HTTP
-yfinance>=0.2.0       # stock prices (time-series overlay, e.g. NVDA close)
-
-# Optional - background music from a YouTube URL (animate(audio_url=...))
-yt-dlp>=2024.1.0      # also needs ffmpeg on PATH
-
-# Note: video/audio export requires FFmpeg installed and on your PATH.
+# Optional extras (only needed by some examples) live in pyproject.toml:
+#   [finance] -> requests, yfinance   (SEC EDGAR scrape + stock overlay)
+#   [audio]   -> yt-dlp               (background music from a YouTube URL)
+#
+# Video/audio export also requires FFmpeg installed and on your PATH (system dependency).

@@ -1,13 +1,16 @@
 """
-Sankey Race Multi-Layers PARALLEL - Máxima Qualidade + Paralelização
-=====================================================================
+gradient-sankey - High-quality animated, true-gradient Sankey diagrams
+=======================================================================
 
-Combina:
-- Qualidade visual do sankey_race_multi_layers_otimizado (FancyBboxPatch, 50 segmentos)
-- Renderização paralela com multiprocessing
-- Todas as paletas de cores e modos (ranking, stacked, stacked+ranking)
+Combines:
+- High visual quality (FancyBboxPatch nodes, cubic-Bezier gradient links).
+- Parallel video rendering with multiprocessing + FFmpeg piping.
+- All color palettes and positioning modes (ranking, stacked, stacked+ranking,
+  fixed), dynamic node colors, dark theme + neon glow, accounting-style value
+  labels, an optional dynamic value axis and a bar-chart-race style overlay,
+  plus background-music muxing (local MP3 or a YouTube URL).
 
-Speedup esperado: ~Nx (onde N = número de workers)
+Expected speedup: ~Nx (N = number of worker processes).
 """
 
 import matplotlib
@@ -25,18 +28,21 @@ from enum import Enum
 from functools import lru_cache
 import subprocess
 import time
+import warnings
 import multiprocessing as mp
 import tempfile
 import shutil
 import os
 
+__version__ = "1.1.0"
+
 
 # =============================================================================
-# Paletas de cores (mesmas do sankey_race_multi_layers_otimizado)
+# Color palettes
 # =============================================================================
 
 class ColorPalette(Enum):
-    """Paletas de cores disponíveis."""
+    """Built-in color palettes."""
     RAINBOW = "rainbow"
     VIRIDIS = "viridis"
     PLASMA = "plasma"
@@ -49,8 +55,8 @@ class ColorPalette(Enum):
     NEON = "neon"
 
 
-# Mapping from ColorPalette to matplotlib colormap names
-# These are continuous colormaps that support smooth interpolation
+# Mapping from ColorPalette to matplotlib colormap names.
+# These are continuous colormaps that support smooth interpolation.
 PALETTE_COLORMAPS = {
     ColorPalette.RAINBOW: "rainbow",
     ColorPalette.VIRIDIS: "viridis",
@@ -72,8 +78,8 @@ def get_colormap(palette: Union[ColorPalette, str, List[str]]):
     Args:
         palette: Can be:
             - ColorPalette enum (e.g., ColorPalette.VIRIDIS)
-            - String name of matplotlib colormap (e.g., "viridis", "RdYlGn")
-            - List of hex colors for custom discrete palette (e.g., ["#FF0000", "#00FF00", "#0000FF"])
+            - String name of a matplotlib colormap (e.g., "viridis", "RdYlGn")
+            - List of hex colors for a custom palette (interpolated)
 
     Returns:
         matplotlib colormap object
@@ -82,33 +88,26 @@ def get_colormap(palette: Union[ColorPalette, str, List[str]]):
 
     # Custom discrete palette (list of hex colors)
     if isinstance(palette, list):
-        # Convert hex colors to RGB tuples
         rgb_colors = [to_rgb(c) for c in palette]
-        # Create a continuous colormap from discrete colors
-        cmap = LinearSegmentedColormap.from_list("custom", rgb_colors, N=256)
-        return cmap
+        return LinearSegmentedColormap.from_list("custom", rgb_colors, N=256)
 
     # ColorPalette enum
     if isinstance(palette, ColorPalette):
         cmap_name = PALETTE_COLORMAPS.get(palette, "rainbow")
         return plt.colormaps.get_cmap(cmap_name)
 
-    # String - could be ColorPalette name or matplotlib colormap name
+    # String - could be a ColorPalette name or a matplotlib colormap name
     if isinstance(palette, str):
-        # Try as ColorPalette first
         try:
             palette_enum = ColorPalette(palette.lower())
             cmap_name = PALETTE_COLORMAPS.get(palette_enum, "rainbow")
             return plt.colormaps.get_cmap(cmap_name)
         except ValueError:
-            # Not a ColorPalette, try as matplotlib colormap name
             try:
                 return plt.colormaps.get_cmap(palette)
-            except ValueError:
-                # Fallback to rainbow
+            except (ValueError, KeyError):
                 return plt.colormaps.get_cmap("rainbow")
 
-    # Default fallback
     return plt.colormaps.get_cmap("rainbow")
 
 
@@ -117,30 +116,22 @@ def get_palette_colors(palette: Union[ColorPalette, str, List[str]], n_colors: i
     Get a list of colors from a palette with continuous interpolation.
 
     Args:
-        palette: Can be:
-            - ColorPalette enum (e.g., ColorPalette.VIRIDIS)
-            - String name of matplotlib colormap (e.g., "viridis", "RdYlGn", "coolwarm")
-            - List of hex colors for custom discrete palette (e.g., ["#FF0000", "#00FF00", "#0000FF"])
-        n_colors: Number of colors to generate
-        reverse: If True, reverse the color order
+        palette: A ColorPalette enum, a matplotlib colormap name, or a list of
+            hex colors to interpolate between.
+        n_colors: Number of colors to generate.
+        reverse: If True, reverse the color order.
 
     Returns:
-        List of hex colors (#RRGGBB)
+        List of hex colors (#RRGGBB).
 
     Examples:
-        # Using built-in palette
-        colors = get_palette_colors(ColorPalette.VIRIDIS, 5)
-
-        # Using matplotlib colormap name
-        colors = get_palette_colors("RdYlGn", 10)
-
-        # Using custom discrete colors (will interpolate between them)
-        colors = get_palette_colors(["#FF0000", "#FFFF00", "#00FF00"], 10)
+        get_palette_colors(ColorPalette.VIRIDIS, 5)
+        get_palette_colors("RdYlGn", 10)
+        get_palette_colors(["#FF0000", "#FFFF00", "#00FF00"], 10)
     """
     cmap = get_colormap(palette)
 
-    # Sample n_colors evenly spaced points from [0, 1]
-    if n_colors == 1:
+    if n_colors <= 1:
         positions = [0.5]
     else:
         positions = [i / (n_colors - 1) for i in range(n_colors)]
@@ -148,25 +139,22 @@ def get_palette_colors(palette: Union[ColorPalette, str, List[str]], n_colors: i
     if reverse:
         positions = positions[::-1]
 
-    # Convert to hex colors
-    colors = [plt.matplotlib.colors.rgb2hex(cmap(pos)[:3]) for pos in positions]
-
-    return colors
+    return [plt.matplotlib.colors.rgb2hex(cmap(pos)[:3]) for pos in positions]
 
 
 @lru_cache(maxsize=256)
 def get_rgb_cached(color: str) -> Tuple[float, float, float]:
-    """Converte cor hex para RGB com cache."""
+    """Convert a hex color to an RGB tuple (cached)."""
     return to_rgb(color)
 
 
 def get_text_color_for_background(bg_color: str) -> str:
-    """Retorna cor de texto ideal baseado na luminosidade."""
+    """Return the ideal text color (black/white) for a given background."""
     try:
         rgb = get_rgb_cached(bg_color)
         luminance = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
         return '#000000' if luminance > 0.5 else '#FFFFFF'
-    except:
+    except (ValueError, TypeError):
         return '#000000'
 
 
@@ -186,8 +174,10 @@ class DynamicColorMode(Enum):
 
 def scale_brightness(hex_color: str, factor: float, floor: float = 0.30) -> str:
     """Keep a color's hue but scale its brightness/saturation by factor in [0,1].
+
     Dim (low value) -> dark & desaturated; bright (high value) -> full neon.
-    `floor` keeps low values visible instead of pitch black."""
+    `floor` keeps low values visible instead of pitch black.
+    """
     import colorsys
     factor = max(0.0, min(1.0, factor))
     r, g, b = to_rgb(hex_color)
@@ -201,40 +191,23 @@ def scale_brightness(hex_color: str, factor: float, floor: float = 0.30) -> str:
 
 def get_dynamic_color(value: float, min_val: float, max_val: float,
                       colormap: Union[ColorPalette, str, List[str]] = 'RdYlGn') -> str:
-    """
-    Return color based on normalized value.
-
-    Args:
-        value: The value to map to a color
-        min_val: Minimum value in the range
-        max_val: Maximum value in the range
-        colormap: Can be ColorPalette, matplotlib colormap name, or list of hex colors
-    """
+    """Return a color based on a normalized value."""
     if max_val == min_val:
         normalized = 0.5
     else:
         normalized = (value - min_val) / (max_val - min_val)
     cmap = get_colormap(colormap)
-    rgba = cmap(normalized)
-    return plt.matplotlib.colors.rgb2hex(rgba[:3])
+    return plt.matplotlib.colors.rgb2hex(cmap(normalized)[:3])
 
 
 def get_ranking_color(rank: int, total: int, colormap: Union[ColorPalette, str, List[str]] = 'RdYlGn') -> str:
-    """
-    Return color based on ranking (1st = high/green, last = low/red).
-
-    Args:
-        rank: The rank (1-indexed, 1 = best)
-        total: Total number of items being ranked
-        colormap: Can be ColorPalette, matplotlib colormap name, or list of hex colors
-    """
+    """Return a color based on a ranking (1st = high/green, last = low/red)."""
     if total <= 1:
         normalized = 1.0
     else:
         normalized = 1.0 - (rank - 1) / (total - 1)
     cmap = get_colormap(colormap)
-    rgba = cmap(normalized)
-    return plt.matplotlib.colors.rgb2hex(rgba[:3])
+    return plt.matplotlib.colors.rgb2hex(cmap(normalized)[:3])
 
 
 def interpolate_color(color1: str, color2: str, t: float) -> str:
@@ -299,12 +272,12 @@ def youtube_to_mp3(url: str, out_dir: str = None, filename: str = None) -> str:
 
 
 # =============================================================================
-# Estruturas de dados (pickleable para multiprocessing)
+# Data structures (pickleable for multiprocessing)
 # =============================================================================
 
 @dataclass
 class FrameData:
-    """Dados de um frame interpolado."""
+    """Data for one (interpolated) frame."""
     time_label: str
     links: List[Tuple[str, str, float]]
     node_positions: Dict[str, float]
@@ -314,91 +287,99 @@ class FrameData:
     progress: float = 0.0  # Continuous data-frame index (0..n_data_frames-1) for timeline overlays
 
 
-# Configurações de qualidade (mesmas do original)
+# Quality defaults
 DEFAULT_GRADIENT_SEGMENTS = 50
 
 
 # =============================================================================
-# Função de renderização de alta qualidade para save_frame
+# Shared low-level drawing helpers
 # =============================================================================
 
-def render_frame_high_quality(ax, frame_data, layers, node_colors,
-                              plot_width, plot_height, node_width, font_size,
-                              n_segments, bar_height_ratio, stacked_mode,
-                              label_color='#000000', node_edge_color='#333333',
-                              link_alpha=0.7, link_glow=0):
-    """
-    Renderiza um frame com alta qualidade (mesma lógica do _render_chunk).
+def _bezier_vec(t_arr, y_start, y_end):
+    """Vectorized smooth (ease-in-out cubic) interpolation used for link curves."""
+    factor = np.where(
+        t_arr < 0.5,
+        4 * t_arr ** 3,
+        1 - (-2 * t_arr + 2) ** 3 / 2
+    )
+    return y_start + (y_end - y_start) * factor
 
-    Args:
-        ax: Matplotlib axes
-        frame_data: FrameData com links, posições, valores
-        layers: Lista de camadas de nós
-        node_colors: Dicionário de cores dos nós
-        plot_width: Largura do plot
-        plot_height: Altura do plot
-        node_width: Largura dos nós
-        font_size: Tamanho da fonte
-        n_segments: Segmentos do gradiente
-        bar_height_ratio: Proporção da altura da barra
-        stacked_mode: Se True, usa modo empilhado
-        label_color: Cor dos rótulos de nome dos nós (ex: '#FFFFFF' para tema escuro)
-        node_edge_color: Cor da borda dos nós
-        link_alpha: Opacidade base dos links (0-1)
-        link_glow: Número de camadas de brilho desenhadas atrás dos links
-                   (0 = sem glow; 2-3 dá efeito neon em fundo escuro)
+
+def _draw_frame(ax, frame_data, cfg):
+    """Render one fully-composed Sankey frame onto ``ax``.
+
+    This is the SINGLE source of truth for frame drawing, shared by both the
+    static renderer (``render_frame_high_quality`` / ``save_frame``) and the
+    parallel video worker (``_render_chunk``), so the two paths can never drift.
+
+    It draws: gradient links (with crossing reduction + optional neon glow),
+    rounded nodes with their name/value labels (accounting parentheses and a
+    "value-next-to-name" fallback for tiny bars), the optional dynamic value
+    Y-axis, and the optional bar-chart-race overlay. The TITLE is intentionally
+    left to the caller (it differs slightly between the static and video paths).
+
+    ``cfg`` carries layout, theme and feature parameters plus the frame-invariant
+    precomputed values ``_t0``/``_t1``/``_t_mid`` and ``_layer_x_positions``.
     """
+    layers = cfg['layers']
     n_layers = len(layers)
-    padding = 1.2
-    margin_top_ratio = 0.12
-    margin_bottom_ratio = 0.05
+    node_colors = cfg['node_colors']
+    rgb_cache = cfg.get('rgb_cache') or {}
+    n_segments = cfg['n_segments']
+    plot_width = cfg['plot_width']
+    plot_height = cfg['plot_height']
+    node_width = cfg['node_width']
+    font_size = cfg['font_size']
+    bar_height_ratio = cfg['bar_height_ratio']
+    margin_top_ratio = cfg['margin_top_ratio']
+    margin_bottom_ratio = cfg['margin_bottom_ratio']
+    stacked_mode = cfg['stacked_mode']
+    label_color = cfg.get('label_color', '#000000')
+    node_edge_color = cfg.get('node_edge_color', '#333333')
+    link_alpha = cfg.get('link_alpha', 0.7)
+    link_glow = cfg.get('link_glow', 0)
+    fixed_layer_max = cfg.get('fixed_layer_max')
+    yaxis_node = cfg.get('yaxis_node')
 
-    # Pré-calcular valores de t para gradiente
-    t = np.linspace(0, 1, n_segments + 1)
-    t0 = t[:-1]
-    t1 = t[1:]
-    t_mid = (t0 + t1) / 2
+    t0 = cfg['_t0']
+    t1 = cfg['_t1']
+    t_mid = cfg['_t_mid']
+    layer_x_positions = cfg['_layer_x_positions']
 
-    def bezier_vec(t_arr, y_start, y_end):
-        factor = np.where(
-            t_arr < 0.5,
-            4 * t_arr ** 3,
-            1 - (-2 * t_arr + 2) ** 3 / 2
-        )
-        return y_start + (y_end - y_start) * factor
+    def _node_hex(n):
+        if frame_data.node_colors:
+            return frame_data.node_colors.get(n, '#888888')
+        return node_colors.get(n, '#888888')
 
-    # Pré-calcular posições X das camadas
-    layer_spacing = (plot_width - 2 * padding - node_width) / max(1, n_layers - 1)
-    layer_x_positions = {}
-    for layer_idx in range(n_layers):
-        if n_layers == 1:
-            layer_x_positions[layer_idx] = plot_width / 2 - node_width / 2
-        else:
-            layer_x_positions[layer_idx] = padding + layer_idx * layer_spacing
+    def _node_rgb(n):
+        if frame_data.node_colors:
+            return np.array(to_rgb(frame_data.node_colors.get(n, '#888888')))
+        if n in rgb_cache:
+            return np.array(rgb_cache[n])
+        return np.array(to_rgb(node_colors.get(n, '#888888')))
 
-    # Margens
+    # Margins
     margin_top = plot_height * margin_top_ratio
     margin_bottom = plot_height * margin_bottom_ratio
     usable_height = plot_height - margin_top - margin_bottom
 
-    # Calcular global_max para escala
-    global_max = max(frame_data.node_values.values()) if frame_data.node_values else 1
-
-    # Escala
+    # Scale
     if stacked_mode:
-        layer_totals = [sum(frame_data.node_values.get(node, 0) for node in layer_nodes)
-                      for layer_nodes in layers]
-        max_layer_total = max(layer_totals) if layer_totals else 1
+        if fixed_layer_max:
+            max_layer_total = fixed_layer_max   # fixed GLOBAL scale (absolute growth)
+        else:
+            layer_totals = [sum(frame_data.node_values.get(node, 0) for node in layer_nodes)
+                            for layer_nodes in layers]
+            max_layer_total = max(layer_totals) if layer_totals else 1
         stacked_height = usable_height * bar_height_ratio
         scale = stacked_height / max_layer_total if max_layer_total > 0 else 1
     else:
         # Fixed mode: uniform node heights (no scaling by value)
-        max_nodes_in_layer = max(len(layer) for layer in layers)
-        available_height_per_slot = usable_height / max_nodes_in_layer
+        max_nodes_in_layer = max((len(layer) for layer in layers), default=1)
+        available_height_per_slot = usable_height / max(1, max_nodes_in_layer)
         fixed_node_height = available_height_per_slot * bar_height_ratio * 0.8
-        scale = None  # Not used in fixed mode
 
-    # Calcular posições dos nós
+    # Node rectangles
     node_positions_rect = {}
     for layer_idx, layer_nodes in enumerate(layers):
         layer_x = layer_x_positions[layer_idx]
@@ -407,54 +388,71 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
             if stacked_mode:
                 h = max(val * scale, 0.1)
             else:
-                # Fixed mode: all nodes have the same height
                 h = fixed_node_height
             y_center = frame_data.node_positions.get(node, margin_bottom + usable_height * 0.5)
-            node_positions_rect[node] = (layer_x, y_center - h/2, h)
+            node_positions_rect[node] = (layer_x, y_center - h / 2, h)
 
-    # Calcular somas para links
+    # Node in/out sums
     out_sums = {}
     in_sums = {}
     for src, tgt, val in frame_data.links:
         out_sums[src] = out_sums.get(src, 0) + val
         in_sums[tgt] = in_sums.get(tgt, 0) + val
 
-    # Escalas de links
+    node_layer_idx = cfg.get('node_layer')
+    if not node_layer_idx:
+        node_layer_idx = {}
+        for layer_idx, layer_nodes in enumerate(layers):
+            for node in layer_nodes:
+                node_layer_idx[node] = layer_idx
+
+    # Link scales. Intermediate nodes use the SAME scale for in & out (based on
+    # max(in, out)) so the spine stays visually consistent across a node.
     node_out_scale = {}
     node_in_scale = {}
     for node in node_positions_rect:
         total_out = out_sums.get(node, 0)
         total_in = in_sums.get(node, 0)
         h = node_positions_rect[node][2]
-        node_out_scale[node] = h / total_out if total_out > 0 else 1
-        node_in_scale[node] = h / total_in if total_in > 0 else 1
+        layer_idx = node_layer_idx.get(node, 0)
+        if 0 < layer_idx < n_layers - 1:
+            total_max = max(total_out, total_in, 0.001)
+            node_out_scale[node] = h / total_max if total_out > 0 else 1
+            node_in_scale[node] = h / total_max if total_in > 0 else 1
+        else:
+            node_out_scale[node] = h / total_out if total_out > 0 else 1
+            node_in_scale[node] = h / total_in if total_in > 0 else 1
 
-    # Construir gradientes
+    # Build gradient quads with crossing reduction: each node's outgoing flows are
+    # stacked by the target's Y-center, incoming flows by the source's Y-center.
     all_vertices = []
     all_colors = []
 
-    # Empilhar fluxos para MINIMIZAR cruzamentos: as saidas de cada no sao
-    # ordenadas pela posicao-Y do destino, e as entradas pela posicao-Y da origem.
     def _yc(n):
-        nx, nyb, nh = node_positions_rect[n]
+        _nx, nyb, nh = node_positions_rect[n]
         return nyb + nh / 2
 
     valid_links = [(s, t, v) for (s, t, v) in frame_data.links
                    if v > 0 and s in node_positions_rect and t in node_positions_rect]
 
+    # Bucket once (avoids O(nodes x links) rescans of valid_links)
+    outs_by_src = {}
+    ins_by_tgt = {}
+    for link in valid_links:
+        outs_by_src.setdefault(link[0], []).append(link)
+        ins_by_tgt.setdefault(link[1], []).append(link)
+
     link_y0 = {}
     node_out_pos = {node: node_positions_rect[node][1] for node in node_positions_rect}
-    for src in node_positions_rect:
-        outs = sorted([l for l in valid_links if l[0] == src], key=lambda l: _yc(l[1]))
-        for s, t, v in outs:
+    for src, outs in outs_by_src.items():
+        for s, t, v in sorted(outs, key=lambda l: _yc(l[1])):
             link_y0[(s, t)] = node_out_pos[s]
             node_out_pos[s] += v * node_out_scale.get(s, 1)
 
     link_y1 = {}
     node_in_pos = {node: node_positions_rect[node][1] for node in node_positions_rect}
-    for tgt in node_positions_rect:
-        ins = sorted([l for l in valid_links if l[1] == tgt], key=lambda l: _yc(l[0]))
-        for s, t, v in ins:
+    for tgt, ins in ins_by_tgt.items():
+        for s, t, v in sorted(ins, key=lambda l: _yc(l[0])):
             link_y1[(s, t)] = node_in_pos[t]
             node_in_pos[t] += v * node_in_scale.get(t, 1)
 
@@ -462,192 +460,337 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
         link_height_src = val * node_out_scale.get(src, 1)
         link_height_tgt = val * node_in_scale.get(tgt, 1)
 
-        src_x, src_y, src_h = node_positions_rect[src]
+        src_x, _src_y, _src_h = node_positions_rect[src]
         x0 = src_x + node_width
         y0_bot = link_y0[(src, tgt)]
         y0_top = y0_bot + link_height_src
 
-        tgt_x, tgt_y, tgt_h = node_positions_rect[tgt]
+        tgt_x, _tgt_y, _tgt_h = node_positions_rect[tgt]
         x1 = tgt_x
         y1_bot = link_y1[(src, tgt)]
         y1_top = y1_bot + link_height_tgt
 
-        # Cores - usar cores dinâmicas se disponíveis
-        if frame_data.node_colors:
-            color_src = frame_data.node_colors.get(src, '#888888')
-            color_tgt = frame_data.node_colors.get(tgt, '#888888')
-        else:
-            color_src = node_colors.get(src, '#888888')
-            color_tgt = node_colors.get(tgt, '#888888')
+        rgb_start = _node_rgb(src)
+        rgb_end = _node_rgb(tgt)
 
-        rgb_start = np.array(to_rgb(color_src))
-        rgb_end = np.array(to_rgb(color_tgt))
-
-        # Construir segmentos do gradiente
         seg_x0 = x0 + (x1 - x0) * t0
         seg_x1 = x0 + (x1 - x0) * t1
+        seg_y0_top = _bezier_vec(t0, y0_top, y1_top)
+        seg_y0_bot = _bezier_vec(t0, y0_bot, y1_bot)
+        seg_y1_top = _bezier_vec(t1, y0_top, y1_top)
+        seg_y1_bot = _bezier_vec(t1, y0_bot, y1_bot)
 
-        seg_y0_top = bezier_vec(t0, y0_top, y1_top)
-        seg_y0_bot = bezier_vec(t0, y0_bot, y1_bot)
-        seg_y1_top = bezier_vec(t1, y0_top, y1_top)
-        seg_y1_bot = bezier_vec(t1, y0_bot, y1_bot)
-
-        # Cores interpoladas
         colors = rgb_start + np.outer(t_mid, rgb_end - rgb_start)
 
         for i in range(n_segments):
-            verts = [
+            all_vertices.append([
                 (seg_x0[i], seg_y0_bot[i]),
                 (seg_x0[i], seg_y0_top[i]),
                 (seg_x1[i], seg_y1_top[i]),
-                (seg_x1[i], seg_y1_bot[i])
-            ]
-            all_vertices.append(verts)
-            all_colors.append((*colors[i], link_alpha))  # RGBA com alpha
+                (seg_x1[i], seg_y1_bot[i]),
+            ])
+            all_colors.append((*colors[i], link_alpha))
 
-    # Desenhar links
     if all_vertices:
-        # Glow: camadas largas e translúcidas por trás (efeito neon no escuro)
+        # Glow: wide translucent layers behind the links (neon effect on dark bg)
         for g in range(link_glow, 0, -1):
             glow_colors = [(r, gc, b, link_alpha * 0.12) for (r, gc, b, _a) in all_colors]
             glow_pc = PolyCollection(all_vertices, facecolors=glow_colors,
-                                     edgecolors='none', linewidths=0)
-            glow_pc.set_linewidth(2.5 * g)
-            glow_pc.set_edgecolors(glow_colors)
+                                     edgecolors=glow_colors, linewidths=2.5 * g)
             ax.add_collection(glow_pc)
-        pc = PolyCollection(all_vertices, facecolors=all_colors, edgecolors='none')
-        ax.add_collection(pc)
+        ax.add_collection(PolyCollection(all_vertices, facecolors=all_colors, edgecolors='none'))
 
-    # Desenhar nós com FancyBboxPatch
+    # Nodes + labels
     min_height_for_inside_text = 0.5
-
     for layer_idx, layer_nodes in enumerate(layers):
         for node in layer_nodes:
             if node not in node_positions_rect:
                 continue
 
             x, y, h = node_positions_rect[node]
+            color = _node_hex(node)
 
-            # Cor do nó - usar dinâmica se disponível
-            if frame_data.node_colors:
-                color = frame_data.node_colors.get(node, '#888888')
-            else:
-                color = node_colors.get(node, '#888888')
-
-            # FancyBboxPatch com cantos arredondados
             rect = mpatches.FancyBboxPatch(
                 (x, y), node_width, h,
                 boxstyle="round,pad=0.02,rounding_size=0.05",
-                facecolor=color,
-                edgecolor=node_edge_color,
-                linewidth=1.5
+                facecolor=color, edgecolor=node_edge_color, linewidth=1.5
             )
             ax.add_patch(rect)
 
             val = frame_data.node_values.get(node, 0)
+            text_color = get_text_color_for_background(color)
 
-            # Calcular cor do texto
-            try:
-                rgb = to_rgb(color)
-                luminance = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
-                text_color = '#000000' if luminance > 0.5 else '#FFFFFF'
-            except:
-                text_color = '#000000'
-
-            # Nome do nó
-            if layer_idx == 0:
-                ax.text(x - 0.15, y + h / 2, f"{node}",
-                       ha='right', va='center', fontsize=font_size, fontweight='bold',
-                       color=label_color)
-            elif layer_idx == n_layers - 1:
-                ax.text(x + node_width + 0.15, y + h / 2, f"{node}",
-                       ha='left', va='center', fontsize=font_size, fontweight='bold',
-                       color=label_color)
+            if frame_data.node_value_labels and node in frame_data.node_value_labels:
+                val_text = frame_data.node_value_labels[node]
             else:
-                ax.text(x + node_width / 2, y + h + 0.15, f"{node}",
-                       ha='center', va='bottom', fontsize=font_size - 1, fontweight='bold',
-                       color=label_color)
+                val_text = f"{val:.0f}"
 
-            # Valor dentro do nó
-            if h >= min_height_for_inside_text:
-                if frame_data.node_value_labels and node in frame_data.node_value_labels:
-                    val_text = frame_data.node_value_labels[node]
-                else:
-                    val_text = f"{val:.0f}"
+            fits = h >= min_height_for_inside_text
+            # If the bar is too small, append the value to the NAME (outside the
+            # bar) so negatives like "(5)" are never hidden.
+            name_txt = f"{node}" if fits else f"{node}  {val_text}"
+
+            if node == yaxis_node:
+                # Node with the value axis: name goes on top to free the left side
+                ax.text(x + node_width / 2, y + h + 0.15, name_txt,
+                        ha='center', va='bottom', fontsize=font_size, fontweight='bold',
+                        color=label_color)
+            elif layer_idx == 0:
+                ax.text(x - 0.15, y + h / 2, name_txt,
+                        ha='right', va='center', fontsize=font_size, fontweight='bold',
+                        color=label_color)
+            elif layer_idx == n_layers - 1:
+                ax.text(x + node_width + 0.15, y + h / 2, name_txt,
+                        ha='left', va='center', fontsize=font_size, fontweight='bold',
+                        color=label_color)
+            else:
+                ax.text(x + node_width / 2, y + h + 0.15, name_txt,
+                        ha='center', va='bottom', fontsize=font_size - 1, fontweight='bold',
+                        color=label_color)
+
+            if fits:
                 ax.text(x + node_width / 2, y + h / 2, val_text,
-                       ha='center', va='center', fontsize=font_size - 1,
-                       color=text_color, fontweight='bold')
+                        ha='center', va='center', fontsize=font_size - 1,
+                        color=text_color, fontweight='bold')
+
+    # Dynamic value Y-axis on a chosen node (discreet ruler with "nice" ticks)
+    if yaxis_node and yaxis_node in node_positions_rect and frame_data.node_values.get(yaxis_node, 0) > 0:
+        yx, yyb, yh = node_positions_rect[yaxis_node]
+        yval = frame_data.node_values[yaxis_node]
+        ysuf = cfg.get('yaxis_suffix', '')
+        raw = yval / 4.0
+        mag = 10 ** np.floor(np.log10(raw)) if raw > 0 else 1.0
+        step = next((m * mag for m in (1, 2, 2.5, 5, 10) if raw <= m * mag), 10 * mag)
+        axis_x = yx - 0.14
+        ax.plot([axis_x, axis_x], [yyb, yyb + yh],
+                color=label_color, lw=1.0, alpha=0.40, zorder=3)
+        tv = 0.0
+        while tv <= yval + 1e-9:
+            ty = yyb + yh * (tv / yval)
+            ax.plot([axis_x - 0.07, axis_x], [ty, ty],
+                    color=label_color, lw=1.0, alpha=0.40, zorder=3)
+            if abs(tv) < 1e-9:
+                lab = "$0"
+            elif tv >= 10:
+                lab = f"${tv:.0f}{ysuf}"
+            else:
+                lab = f"${tv:.1f}{ysuf}"
+            ax.text(axis_x - 0.11, ty, lab, color=label_color, fontsize=font_size - 3,
+                    alpha=0.55, ha='right', va='center', zorder=3)
+            tv += step
+
+    # Bar-chart-race style overlay (footer): mini area chart + discreet big number
+    overlay_series = cfg.get('overlay_series')
+    if overlay_series:
+        ov_color = cfg.get('overlay_color', '#33E08A')
+        ov_label = cfg.get('overlay_label', '')
+        ov_suffix = cfg.get('overlay_value_suffix', '')
+        ov_badge = cfg.get('overlay_badge', '')
+        n_ov = len(overlay_series)
+        footer_top = plot_height * margin_bottom_ratio
+
+        # Aligned horizontally with the Sankey (from first layer to the last node)
+        bx0 = layer_x_positions[0]
+        bx1 = layer_x_positions[n_layers - 1]
+        by0, by1 = footer_top * 0.34, footer_top * 0.80
+
+        p = max(0.0, min(frame_data.progress, n_ov - 1))
+        k = int(np.floor(p))
+        if k < n_ov - 1:
+            frac = p - k
+            cur_val = overlay_series[k] + (overlay_series[k + 1] - overlay_series[k]) * frac
+        else:
+            cur_val = overlay_series[-1]
+
+        # "Bar chart race" style: the curve ALWAYS fills the width (fixed size), the
+        # X (time) axis evolves, the Y axis is a running max. "Now" sits at the right.
+        def _sx(idx):
+            return bx0 + (bx1 - bx0) * (idx / p if p > 0 else 1.0)
+
+        seen = overlay_series[:k + 1] + [cur_val]
+        smax = max(seen) or 1
+
+        def _sy(v):
+            return by0 + (by1 - by0) * (max(v, 0) / smax)
+
+        xs = [_sx(j) for j in range(k + 1)] + [bx1]
+        ys = [_sy(overlay_series[j]) for j in range(k + 1)] + [_sy(cur_val)]
+        cx, cy = bx1, _sy(cur_val)
+
+        ax.plot([bx0, bx1], [by0, by0], color=label_color, lw=0.8, alpha=0.22, zorder=5)
+        ax.fill_between(xs, by0, ys, color=ov_color, alpha=0.16, zorder=6)
+        ax.plot(xs, ys, color=ov_color, lw=2.2, alpha=0.95, zorder=7)
+        ax.scatter([cx], [cy], s=46, color='#FFFFFF', zorder=8)
+        ax.scatter([cx], [cy], s=20, color=ov_color, zorder=9)
+        if ov_label:
+            ax.text(bx0, by1 + footer_top * 0.16, ov_label, color=label_color,
+                    fontsize=font_size - 2, alpha=0.6, va='bottom', ha='left')
+        ytop = (f"${smax:.0f}{ov_suffix}" if smax >= 10 else f"${smax:.1f}{ov_suffix}")
+        ax.text(bx0 - plot_width * 0.006, by1, ytop, color=ov_color,
+                fontsize=font_size - 3, alpha=0.5, va='center', ha='right')
+
+        # Time (X) axis: mark the first quarter of each year seen so far
+        xlabels = cfg.get('overlay_x_labels')
+        if xlabels:
+            prev_year = None
+            for j in range(k + 1):
+                yr = str(xlabels[j]).split()[0]
+                if yr != prev_year:
+                    prev_year = yr
+                    tx = _sx(j)
+                    ax.plot([tx, tx], [by0, by0 - footer_top * 0.06],
+                            color=label_color, lw=0.8, alpha=0.30, zorder=5)
+                    ax.text(tx, by0 - footer_top * 0.10, yr, color=label_color,
+                            fontsize=font_size - 4, alpha=0.5, ha='center', va='top', zorder=5)
+
+        # Big number anchoring the bottom-right corner + optional badge
+        title_fontsize = cfg.get('title_fontsize', 18)
+        big = (f"${cur_val:.0f}{ov_suffix}" if cur_val >= 10 else f"${cur_val:.1f}{ov_suffix}")
+        ax.text(plot_width * 0.985, footer_top * 0.42, big,
+                color=ov_color, fontsize=title_fontsize * 2.4, fontweight='bold',
+                alpha=0.26, ha='right', va='center', zorder=4)
+        if ov_badge:
+            ax.text(plot_width * 0.985, footer_top * 0.88, ov_badge,
+                    color=label_color, fontsize=font_size - 1, fontweight='bold',
+                    alpha=0.55, ha='right', va='center', zorder=4)
+
+
+def render_frame_high_quality(ax, frame_data, layers, node_colors,
+                              plot_width, plot_height, node_width, font_size,
+                              n_segments, bar_height_ratio, stacked_mode,
+                              label_color='#000000', node_edge_color='#333333',
+                              link_alpha=0.7, link_glow=0,
+                              padding=1.2, yaxis_node=None, yaxis_suffix=""):
+    """
+    Render a single high-quality Sankey frame onto ``ax`` (no title).
+
+    Thin wrapper over the shared :func:`_draw_frame` so a static frame is drawn
+    by exactly the same code path as a video frame.
+
+    Args:
+        ax: Matplotlib axes.
+        frame_data: A :class:`FrameData` with links, positions, values.
+        layers: List of node layers (left -> right).
+        node_colors: Mapping node -> hex color.
+        plot_width, plot_height: Plot extents in data coordinates.
+        node_width: Node rectangle width.
+        font_size: Base font size.
+        n_segments: Gradient segments per link.
+        bar_height_ratio: Fraction of usable height used by stacked bars.
+        stacked_mode: If True, node heights scale with value.
+        label_color: Node name label color.
+        node_edge_color: Node border color.
+        link_alpha: Base link opacity (0-1).
+        link_glow: Number of neon glow layers behind the links (0 = none).
+        padding: Horizontal padding around the layers.
+        yaxis_node: Optional node to draw a dynamic value axis next to.
+        yaxis_suffix: Suffix for the value-axis tick labels (e.g. "B").
+    """
+    n_layers = len(layers)
+    t = np.linspace(0, 1, n_segments + 1)
+    t0 = t[:-1]
+    t1 = t[1:]
+    t_mid = (t0 + t1) / 2
+
+    layer_spacing = (plot_width - 2 * padding - node_width) / max(1, n_layers - 1)
+    layer_x_positions = {}
+    for layer_idx in range(n_layers):
+        if n_layers == 1:
+            layer_x_positions[layer_idx] = plot_width / 2 - node_width / 2
+        else:
+            layer_x_positions[layer_idx] = padding + layer_idx * layer_spacing
+
+    cfg = {
+        'layers': layers,
+        'node_colors': node_colors,
+        'n_segments': n_segments,
+        'plot_width': plot_width,
+        'plot_height': plot_height,
+        'node_width': node_width,
+        'font_size': font_size,
+        'bar_height_ratio': bar_height_ratio,
+        'margin_top_ratio': 0.12,
+        'margin_bottom_ratio': 0.05,
+        'stacked_mode': stacked_mode,
+        'label_color': label_color,
+        'node_edge_color': node_edge_color,
+        'link_alpha': link_alpha,
+        'link_glow': link_glow,
+        'yaxis_node': yaxis_node,
+        'yaxis_suffix': yaxis_suffix,
+        '_t0': t0, '_t1': t1, '_t_mid': t_mid,
+        '_layer_x_positions': layer_x_positions,
+    }
+    _draw_frame(ax, frame_data, cfg)
 
 
 # =============================================================================
-# Worker function - Renderiza chunk com MESMA qualidade do original
+# Worker function - renders a chunk of frames in a separate process
 # =============================================================================
 
 def _render_chunk(args):
-    """
-    Renderiza um chunk de frames em um processo separado.
-    USA MESMA LÓGICA DE RENDERIZAÇÃO do sankey_race_multi_layers_otimizado.
+    """Render a chunk of frames in a separate process and pipe them to FFmpeg.
+
+    Uses the shared :func:`_draw_frame` so every video frame matches a static one.
+    Always closes the figure and the FFmpeg process, and raises a descriptive
+    error (instead of silently emitting a truncated file) if FFmpeg fails.
     """
     (chunk_id, frames_data, config) = args
 
-    # Importar matplotlib dentro do worker (isolado)
+    # Import matplotlib inside the worker (isolated per process)
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
-    from matplotlib.collections import PolyCollection
 
-    # Desempacotar config
-    width = config['width']
-    height = config['height']
     figsize = config['figsize']
     fps = config['fps']
     bitrate = config['bitrate']
     title = config['title']
     layers = config['layers']
-    node_colors = config['node_colors']
-    rgb_cache = config['rgb_cache']
-    node_layer = config['node_layer']
     temp_dir = config['temp_dir']
     n_segments = config['n_segments']
 
-    # Parâmetros de layout (mesmos do original)
     plot_width = config['plot_width']
     plot_height = config['plot_height']
     node_width = config['node_width']
     padding = config['padding']
-    global_max = config['global_max']
-    font_size = config['font_size']
-    bar_height_ratio = config['bar_height_ratio']
-    margin_top_ratio = config['margin_top_ratio']
-    margin_bottom_ratio = config['margin_bottom_ratio']
     title_fontsize = config['title_fontsize']
     title_bg_color = config['title_bg_color']
     title_bg_alpha = config['title_bg_alpha']
-    stacked_mode = config['stacked_mode']
 
-    # Tema (cores) - com defaults claros para retrocompatibilidade
     bg_color = config.get('bg_color', 'white')
-    label_color = config.get('label_color', '#000000')
-    node_edge_color = config.get('node_edge_color', '#333333')
     title_text_color = config.get('title_text_color', '#000000')
-    link_alpha = config.get('link_alpha', 0.7)
-    link_glow = config.get('link_glow', 0)
 
-    # Criar arquivo de saída para este chunk
+    # Precompute frame-invariant gradient params and layer X positions once
+    n_layers = len(layers)
+    t = np.linspace(0, 1, n_segments + 1)
+    t0 = t[:-1]
+    t1 = t[1:]
+    t_mid = (t0 + t1) / 2
+
+    layer_spacing = (plot_width - 2 * padding - node_width) / max(1, n_layers - 1)
+    layer_x_positions = {}
+    for layer_idx in range(n_layers):
+        if n_layers == 1:
+            layer_x_positions[layer_idx] = plot_width / 2 - node_width / 2
+        else:
+            layer_x_positions[layer_idx] = padding + layer_idx * layer_spacing
+
+    draw_cfg = dict(config)
+    draw_cfg['_t0'] = t0
+    draw_cfg['_t1'] = t1
+    draw_cfg['_t_mid'] = t_mid
+    draw_cfg['_layer_x_positions'] = layer_x_positions
+
     chunk_path = os.path.join(temp_dir, f"chunk_{chunk_id:04d}.mp4")
 
-    # Criar figura com mesmas dimensões do original
     fig, ax = plt.subplots(figsize=figsize)
     fig.patch.set_facecolor(bg_color)
     ax.set_facecolor(bg_color)
     fig.tight_layout(pad=0.5)
-
-    # Obter dimensões reais do canvas
     fig.canvas.draw()
     canvas_width, canvas_height = fig.canvas.get_width_height()
 
-    # Iniciar FFmpeg para este chunk
     ffmpeg_cmd = [
         'ffmpeg', '-y',
         '-f', 'rawvideo',
@@ -660,424 +803,95 @@ def _render_chunk(args):
         '-pix_fmt', 'yuv420p',
         '-b:v', bitrate,
         '-preset', 'fast',
-        chunk_path
+        chunk_path,
     ]
 
     process = subprocess.Popen(
         ffmpeg_cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
+        stderr=subprocess.PIPE,
     )
 
-    n_layers = len(layers)
+    try:
+        for frame_data in frames_data:
+            ax.clear()
+            ax.set_xlim(0, plot_width)
+            ax.set_ylim(0, plot_height)
+            ax.set_aspect('auto')
+            ax.axis('off')
+            ax.set_facecolor(bg_color)
 
-    # Pré-calcular valores de t para gradiente
-    t = np.linspace(0, 1, n_segments + 1)
-    t0 = t[:-1]
-    t1 = t[1:]
-    t_mid = (t0 + t1) / 2
+            _draw_frame(ax, frame_data, draw_cfg)
 
-    def bezier_vec(t_arr, y_start, y_end):
-        factor = np.where(
-            t_arr < 0.5,
-            4 * t_arr ** 3,
-            1 - (-2 * t_arr + 2) ** 3 / 2
-        )
-        return y_start + (y_end - y_start) * factor
+            # Title (drawn by the caller path so the static/video titles can differ)
+            display_title = title if title else ""
+            ax.text(plot_width / 2, plot_height * 0.95,
+                    f"{display_title}\n{frame_data.time_label}" if display_title else frame_data.time_label,
+                    ha='center', va='top', fontsize=title_fontsize, fontweight='bold',
+                    color=title_text_color,
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor=title_bg_color, alpha=title_bg_alpha))
 
-    # Pré-calcular posições X das camadas
-    layer_spacing = (plot_width - 2 * padding - node_width) / max(1, n_layers - 1)
-    layer_x_positions = {}
-    for layer_idx in range(n_layers):
-        if n_layers == 1:
-            layer_x_positions[layer_idx] = plot_width / 2 - node_width / 2
-        else:
-            layer_x_positions[layer_idx] = padding + layer_idx * layer_spacing
-
-    # Renderizar cada frame
-    for frame_data in frames_data:
-        ax.clear()
-        ax.set_xlim(0, plot_width)
-        ax.set_ylim(0, plot_height)
-        ax.set_aspect('auto')
-        ax.axis('off')
-        ax.set_facecolor(bg_color)
-
-        # Margens
-        margin_top = plot_height * margin_top_ratio
-        margin_bottom = plot_height * margin_bottom_ratio
-        usable_height = plot_height - margin_top - margin_bottom
-
-        # Escala (mesma lógica do original)
-        if stacked_mode:
-            fixed_layer_max = config.get('fixed_layer_max')
-            if fixed_layer_max:
-                max_layer_total = fixed_layer_max   # escala GLOBAL fixa (crescimento absoluto)
-            else:
-                layer_totals = [sum(frame_data.node_values.get(node, 0) for node in layer_nodes)
-                              for layer_nodes in layers]
-                max_layer_total = max(layer_totals) if layer_totals else 1
-            stacked_height = usable_height * bar_height_ratio
-            scale = stacked_height / max_layer_total if max_layer_total > 0 else 1
-        else:
-            # Fixed mode: uniform node heights (no scaling by value)
-            max_nodes_in_layer = max(len(layer) for layer in layers)
-            available_height_per_slot = usable_height / max_nodes_in_layer
-            fixed_node_height = available_height_per_slot * bar_height_ratio * 0.8
-            scale = None  # Not used in fixed mode
-
-        # Calcular posições dos nós
-        node_positions_rect = {}
-        for layer_idx, layer_nodes in enumerate(layers):
-            layer_x = layer_x_positions[layer_idx]
-            for node in layer_nodes:
-                val = frame_data.node_values.get(node, 0)
-                if stacked_mode:
-                    h = max(val * scale, 0.1)
-                else:
-                    # Fixed mode: all nodes have the same height
-                    h = fixed_node_height
-                y_center = frame_data.node_positions.get(node, margin_bottom + usable_height * 0.5)
-                node_positions_rect[node] = (layer_x, y_center - h/2, h)
-
-        # Calcular somas para links
-        out_sums = {}
-        in_sums = {}
-        for src, tgt, val in frame_data.links:
-            out_sums[src] = out_sums.get(src, 0) + val
-            in_sums[tgt] = in_sums.get(tgt, 0) + val
-
-        # Determinar em qual camada cada nó está
-        node_layer_idx = {}
-        for layer_idx, layer_nodes in enumerate(layers):
-            for node in layer_nodes:
-                node_layer_idx[node] = layer_idx
-
-        # Escalas de links - CORRIGIDO para nós intermediários
-        # Para nós intermediários, usar a MESMA escala para entrada e saída
-        # baseada no max(in, out) para garantir consistência visual.
-        node_out_scale = {}
-        node_in_scale = {}
-        for node in node_positions_rect:
-            total_out = out_sums.get(node, 0)
-            total_in = in_sums.get(node, 0)
-            h = node_positions_rect[node][2]
-            layer_idx = node_layer_idx.get(node, 0)
-            if 0 < layer_idx < n_layers - 1:
-                # Nó intermediário: escala consistente baseada no max(in, out)
-                total_max = max(total_out, total_in, 0.001)
-                node_out_scale[node] = h / total_max if total_out > 0 else 1
-                node_in_scale[node] = h / total_max if total_in > 0 else 1
-            else:
-                # Primeira ou última camada: escala normal
-                node_out_scale[node] = h / total_out if total_out > 0 else 1
-                node_in_scale[node] = h / total_in if total_in > 0 else 1
-
-        # Construir gradientes (MESMA lógica do original)
-        all_vertices = []
-        all_colors = []
-
-        # Empilhar fluxos para MINIMIZAR cruzamentos: saidas ordenadas pela
-        # posicao-Y do destino, entradas pela posicao-Y da origem.
-        def _yc(n):
-            nx, nyb, nh = node_positions_rect[n]
-            return nyb + nh / 2
-
-        valid_links = [(s, t, v) for (s, t, v) in frame_data.links
-                       if v > 0 and s in node_positions_rect and t in node_positions_rect]
-
-        link_y0 = {}
-        node_out_pos = {node: node_positions_rect[node][1] for node in node_positions_rect}
-        for src in node_positions_rect:
-            outs = sorted([l for l in valid_links if l[0] == src], key=lambda l: _yc(l[1]))
-            for s, t, v in outs:
-                link_y0[(s, t)] = node_out_pos[s]
-                node_out_pos[s] += v * node_out_scale.get(s, 1)
-
-        link_y1 = {}
-        node_in_pos = {node: node_positions_rect[node][1] for node in node_positions_rect}
-        for tgt in node_positions_rect:
-            ins = sorted([l for l in valid_links if l[1] == tgt], key=lambda l: _yc(l[0]))
-            for s, t, v in ins:
-                link_y1[(s, t)] = node_in_pos[t]
-                node_in_pos[t] += v * node_in_scale.get(t, 1)
-
-        for src, tgt, val in sorted(valid_links, key=lambda x: (x[0], x[1])):
-            link_height_src = val * node_out_scale.get(src, 1)
-            link_height_tgt = val * node_in_scale.get(tgt, 1)
-
-            src_x, src_y, src_h = node_positions_rect[src]
-            x0 = src_x + node_width
-            y0_bot = link_y0[(src, tgt)]
-            y0_top = y0_bot + link_height_src
-
-            tgt_x, tgt_y, tgt_h = node_positions_rect[tgt]
-            x1 = tgt_x
-            y1_bot = link_y1[(src, tgt)]
-            y1_top = y1_bot + link_height_tgt
-
-            # Cores (use dynamic colors if available, otherwise use static)
-            if frame_data.node_colors:
-                color_src = frame_data.node_colors.get(src, '#888888')
-                color_tgt = frame_data.node_colors.get(tgt, '#888888')
-                rgb_start = np.array(to_rgb(color_src))
-                rgb_end = np.array(to_rgb(color_tgt))
-            else:
-                rgb_start = np.array(rgb_cache.get(src, (0.5, 0.5, 0.5)))
-                rgb_end = np.array(rgb_cache.get(tgt, (0.5, 0.5, 0.5)))
-
-            # Construir segmentos do gradiente
-            seg_x0 = x0 + (x1 - x0) * t0
-            seg_x1 = x0 + (x1 - x0) * t1
-
-            seg_y0_top = bezier_vec(t0, y0_top, y1_top)
-            seg_y0_bot = bezier_vec(t0, y0_bot, y1_bot)
-            seg_y1_top = bezier_vec(t1, y0_top, y1_top)
-            seg_y1_bot = bezier_vec(t1, y0_bot, y1_bot)
-
-            # Cores interpoladas
-            colors = rgb_start + np.outer(t_mid, rgb_end - rgb_start)
-
-            for i in range(n_segments):
-                verts = [
-                    (seg_x0[i], seg_y0_bot[i]),
-                    (seg_x0[i], seg_y0_top[i]),
-                    (seg_x1[i], seg_y1_top[i]),
-                    (seg_x1[i], seg_y1_bot[i])
-                ]
-                all_vertices.append(verts)
-                all_colors.append((*colors[i], link_alpha))  # RGBA com alpha
-
-        # Desenhar links
-        if all_vertices:
-            # Glow: camadas largas e translucidas atras (efeito neon no escuro)
-            for g in range(link_glow, 0, -1):
-                glow_colors = [(r, gc, b, link_alpha * 0.12) for (r, gc, b, _a) in all_colors]
-                glow_pc = PolyCollection(all_vertices, facecolors=glow_colors,
-                                         edgecolors=glow_colors, linewidths=2.5 * g)
-                ax.add_collection(glow_pc)
-            pc = PolyCollection(all_vertices, facecolors=all_colors, edgecolors='none')
-            ax.add_collection(pc)
-
-        # Desenhar nós com FancyBboxPatch (MESMA qualidade do original)
-        min_height_for_inside_text = 0.5
-
-        for layer_idx, layer_nodes in enumerate(layers):
-            for node in layer_nodes:
-                if node not in node_positions_rect:
-                    continue
-
-                x, y, h = node_positions_rect[node]
-                # Use dynamic colors if available, otherwise static
-                if frame_data.node_colors:
-                    color = frame_data.node_colors.get(node, '#888888')
-                else:
-                    color = node_colors.get(node, '#888888')
-
-                # FancyBboxPatch com cantos arredondados
-                rect = mpatches.FancyBboxPatch(
-                    (x, y), node_width, h,
-                    boxstyle="round,pad=0.02,rounding_size=0.05",
-                    facecolor=color,
-                    edgecolor=node_edge_color,
-                    linewidth=1.5
-                )
-                ax.add_patch(rect)
-
-                val = frame_data.node_values.get(node, 0)
-
-                # Calcular cor do texto
-                try:
-                    rgb = to_rgb(color)
-                    luminance = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
-                    text_color = '#000000' if luminance > 0.5 else '#FFFFFF'
-                except:
-                    text_color = '#000000'
-
-                # Texto do valor (rotulo customizado, ex: "(5)" para negativos)
-                if frame_data.node_value_labels and node in frame_data.node_value_labels:
-                    val_text = frame_data.node_value_labels[node]
-                else:
-                    val_text = f"{val:.0f}"
-                fits = h >= min_height_for_inside_text
-                # Se a barra e' pequena demais, anexa o valor ao NOME (fora da barra),
-                # garantindo que negativos como "(5)" fiquem sempre visiveis.
-                name_txt = f"{node}" if fits else f"{node}  {val_text}"
-
-                # Nome do nó
-                if node == config.get('yaxis_node'):
-                    # Nó com eixo Y: nome vai pro topo pra liberar espaco do eixo a' esquerda
-                    ax.text(x + node_width / 2, y + h + 0.15, name_txt,
-                           ha='center', va='bottom', fontsize=font_size, fontweight='bold',
-                           color=label_color)
-                elif layer_idx == 0:
-                    ax.text(x - 0.15, y + h / 2, name_txt,
-                           ha='right', va='center', fontsize=font_size, fontweight='bold',
-                           color=label_color)
-                elif layer_idx == n_layers - 1:
-                    ax.text(x + node_width + 0.15, y + h / 2, name_txt,
-                           ha='left', va='center', fontsize=font_size, fontweight='bold',
-                           color=label_color)
-                else:
-                    ax.text(x + node_width / 2, y + h + 0.15, name_txt,
-                           ha='center', va='bottom', fontsize=font_size - 1, fontweight='bold',
-                           color=label_color)
-
-                # Valor dentro do nó (apenas quando cabe)
-                if fits:
-                    ax.text(x + node_width / 2, y + h / 2, val_text,
-                           ha='center', va='center', fontsize=font_size - 1,
-                           color=text_color, fontweight='bold')
-
-        # Eixo Y dinamico na 1a layer (mostra a dimensao em $; rotulos evoluem no tempo).
-        # Discreto, mas visivel: linha + ticks "redondos" a' esquerda do no'.
-        yaxis_node = config.get('yaxis_node')
-        if yaxis_node and yaxis_node in node_positions_rect and frame_data.node_values.get(yaxis_node, 0) > 0:
-            yx, yyb, yh = node_positions_rect[yaxis_node]
-            yval = frame_data.node_values[yaxis_node]
-            ysuf = config.get('yaxis_suffix', '')
-            raw = yval / 4.0
-            mag = 10 ** np.floor(np.log10(raw)) if raw > 0 else 1.0
-            step = next((m * mag for m in (1, 2, 2.5, 5, 10) if raw <= m * mag), 10 * mag)
-            axis_x = yx - 0.14
-            ax.plot([axis_x, axis_x], [yyb, yyb + yh],
-                    color=label_color, lw=1.0, alpha=0.40, zorder=3)
-            tv = 0.0
-            while tv <= yval + 1e-9:
-                ty = yyb + yh * (tv / yval)
-                ax.plot([axis_x - 0.07, axis_x], [ty, ty],
-                        color=label_color, lw=1.0, alpha=0.40, zorder=3)
-                if tv == 0:
-                    lab = "$0"
-                elif tv >= 10:
-                    lab = f"${tv:.0f}{ysuf}"
-                else:
-                    lab = f"${tv:.1f}{ysuf}"
-                ax.text(axis_x - 0.11, ty, lab, color=label_color, fontsize=font_size - 3,
-                        alpha=0.55, ha='right', va='center', zorder=3)
-                tv += step
-
-        # Título
-        display_title = title if title else ""
-        ax.text(plot_width / 2, plot_height * 0.95,
-               f"{display_title}\n{frame_data.time_label}" if display_title else frame_data.time_label,
-               ha='center', va='top', fontsize=title_fontsize, fontweight='bold',
-               color=title_text_color,
-               bbox=dict(boxstyle='round,pad=0.3', facecolor=title_bg_color, alpha=title_bg_alpha))
-
-        # Overlay de crescimento (rodape): mini-grafico da acao + big number discreto
-        overlay_series = config.get('overlay_series')
-        if overlay_series:
-            ov_color = config.get('overlay_color', '#33E08A')
-            ov_label = config.get('overlay_label', '')
-            ov_suffix = config.get('overlay_value_suffix', '')
-            n_ov = len(overlay_series)
-            footer_top = plot_height * margin_bottom_ratio   # rodape = [0, footer_top]
-
-            # Alinhado horizontalmente com o Sankey (do Revenue ate' o ultimo no',
-            # parando na borda esquerda do ultimo no' p/ deixar espaco ao big number)
-            bx0 = layer_x_positions[0]
-            bx1 = layer_x_positions[n_layers - 1]
-            by0, by1 = footer_top * 0.34, footer_top * 0.80
-
-            p = max(0.0, min(frame_data.progress, n_ov - 1))
-            k = int(np.floor(p))
-            if k < n_ov - 1:
-                frac = p - k
-                cur_val = overlay_series[k] + (overlay_series[k + 1] - overlay_series[k]) * frac
-            else:
-                cur_val = overlay_series[-1]
-
-            # Estilo "bar chart race": a curva SEMPRE preenche a largura (tamanho fixo),
-            # o eixo X (tempo) evolui (janela 0..agora remapeada pra [bx0,bx1]) e o eixo Y
-            # e' dinamico (running max). O "agora" fica sempre na ponta direita.
-            def _sx(idx):
-                return bx0 + (bx1 - bx0) * (idx / p if p > 0 else 1.0)
-
-            seen = overlay_series[:k + 1] + [cur_val]
-            smax = max(seen) or 1
-
-            def _sy(v):
-                return by0 + (by1 - by0) * (max(v, 0) / smax)
-
-            xs = [_sx(j) for j in range(k + 1)] + [bx1]
-            ys = [_sy(overlay_series[j]) for j in range(k + 1)] + [_sy(cur_val)]
-            cx, cy = bx1, _sy(cur_val)
-
-            ax.plot([bx0, bx1], [by0, by0], color=label_color, lw=0.8, alpha=0.22, zorder=5)
-            ax.fill_between(xs, by0, ys, color=ov_color, alpha=0.16, zorder=6)
-            ax.plot(xs, ys, color=ov_color, lw=2.2, alpha=0.95, zorder=7)
-            ax.scatter([cx], [cy], s=46, color='#FFFFFF', zorder=8)
-            ax.scatter([cx], [cy], s=20, color=ov_color, zorder=9)
-            if ov_label:
-                ax.text(bx0, by1 + footer_top * 0.16, ov_label, color=label_color,
-                        fontsize=font_size - 2, alpha=0.6, va='bottom', ha='left')
-            # Topo do eixo Y dinamico = maxima ate agora (rescala)
-            ytop = (f"${smax:.0f}{ov_suffix}" if smax >= 10 else f"${smax:.1f}{ov_suffix}")
-            ax.text(bx0 - plot_width * 0.006, by1, ytop, color=ov_color,
-                    fontsize=font_size - 3, alpha=0.5, va='center', ha='right')
-
-            # Eixo X temporal: marca o 1o trimestre de cada ano ate' agora (comprime no tempo)
-            xlabels = config.get('overlay_x_labels')
-            if xlabels:
-                prev_year = None
-                for j in range(k + 1):
-                    yr = str(xlabels[j]).split()[0]
-                    if yr != prev_year:
-                        prev_year = yr
-                        tx = _sx(j)
-                        ax.plot([tx, tx], [by0, by0 - footer_top * 0.06],
-                                color=label_color, lw=0.8, alpha=0.30, zorder=5)
-                        ax.text(tx, by0 - footer_top * 0.10, yr, color=label_color,
-                                fontsize=font_size - 4, alpha=0.5, ha='center', va='top', zorder=5)
-
-            # Big number ancorando o canto direito do rodape + rotulo NVDA
-            big = (f"${cur_val:.0f}{ov_suffix}" if cur_val >= 10
-                   else f"${cur_val:.1f}{ov_suffix}")
-            ax.text(plot_width * 0.985, footer_top * 0.42, big,
-                    color=ov_color, fontsize=title_fontsize * 2.4, fontweight='bold',
-                    alpha=0.26, ha='right', va='center', zorder=4)
-            ax.text(plot_width * 0.985, footer_top * 0.88, "NVDA",
-                    color=label_color, fontsize=font_size - 1, fontweight='bold',
-                    alpha=0.55, ha='right', va='center', zorder=4)
-
-        # Capturar frame
-        fig.canvas.draw()
-        buf = fig.canvas.buffer_rgba()
-        img_array = np.asarray(buf)
-        rgb_array = np.ascontiguousarray(img_array[:, :, :3])
-
-        try:
+            fig.canvas.draw()
+            buf = fig.canvas.buffer_rgba()
+            img_array = np.asarray(buf)
+            rgb_array = np.ascontiguousarray(img_array[:, :, :3])
             process.stdin.write(rgb_array.tobytes())
-        except:
-            break
 
-    process.stdin.close()
-    process.communicate(timeout=300)
-
-    plt.close(fig)
+        process.stdin.close()
+        _stdout, stderr = process.communicate(timeout=300)
+        if process.returncode != 0:
+            raise RuntimeError(
+                f"FFmpeg failed for chunk {chunk_id} (exit {process.returncode}):\n"
+                f"{stderr.decode(errors='ignore')[-800:]}"
+            )
+    except BaseException:
+        # Never leak the subprocess or the figure on error
+        try:
+            process.kill()
+        except Exception:
+            pass
+        try:
+            process.wait(timeout=10)
+        except Exception:
+            pass
+        raise
+    finally:
+        plt.close(fig)
 
     return chunk_id, chunk_path, len(frames_data)
 
 
 # =============================================================================
-# Classe principal
+# Main class
 # =============================================================================
 
 class SankeyRaceMultiLayerParallel:
     """
-    Sankey Race Multi-Layer com renderização PARALELA.
+    Multi-layer Sankey "race" with PARALLEL rendering.
 
-    Combina:
-    - MESMA qualidade visual do sankey_race_multi_layers_otimizado
-    - Renderização paralela com multiprocessing
-    - Todas as paletas e modos (ranking, stacked, stacked+ranking)
+    Combines high visual quality, parallel multiprocessing video rendering, and
+    all palettes/modes (ranking, stacked, stacked+ranking, fixed).
     """
 
     def __init__(self,
                  layers: List[List[str]],
                  node_colors: Dict[str, str]):
+        if not layers or not any(layers):
+            raise ValueError("`layers` must be a non-empty list of non-empty node lists.")
+        for i, layer in enumerate(layers):
+            if not layer:
+                raise ValueError(f"Layer {i} is empty; every layer must have at least one node.")
+
+        # Node names must be unique across ALL layers (they key a single position dict)
+        all_nodes = [node for layer in layers for node in layer]
+        if len(all_nodes) != len(set(all_nodes)):
+            dups = sorted({n for n in all_nodes if all_nodes.count(n) > 1})
+            raise ValueError(
+                "Node names must be unique across all layers; duplicates found: "
+                f"{dups}. Rename them (e.g. prefix by layer)."
+            )
+
         self.layers = layers
         self.node_colors = node_colors
         self.frames = []
@@ -1091,7 +905,6 @@ class SankeyRaceMultiLayerParallel:
         for node, color in node_colors.items():
             self._rgb_cache[node] = get_rgb_cached(color)
 
-        # Cache de global_max
         self._global_max_cache = None
 
     @classmethod
@@ -1104,7 +917,32 @@ class SankeyRaceMultiLayerParallel:
                        value_col: str = "valor",
                        layer_palettes: Optional[List[Union[ColorPalette, str]]] = None,
                        node_colors: Optional[Dict[str, str]] = None) -> 'SankeyRaceMultiLayerParallel':
-        """Cria instância a partir de um DataFrame."""
+        """Create an instance from a tidy DataFrame (one row per flow).
+
+        The DataFrame must contain ``time_col``, ``source_col``, ``target_col`` and
+        ``value_col``. Node names in ``layers`` must be unique across all layers.
+        Link values should be magnitudes (>= 0); negatives are dropped at render
+        time, so pass ``abs(value)`` and use ``node_value_labels`` for accounting
+        parentheses if you need to show signed figures.
+        """
+        if df is None or len(df) == 0:
+            raise ValueError("`df` is empty; nothing to render.")
+
+        missing = [c for c in (time_col, source_col, target_col, value_col) if c not in df.columns]
+        if missing:
+            raise ValueError(
+                f"DataFrame is missing required column(s) {missing}. "
+                f"Available columns: {list(df.columns)}"
+            )
+
+        if df[value_col].isna().any():
+            raise ValueError(f"`{value_col}` contains NaN values; clean or fill them first.")
+        if (pd.to_numeric(df[value_col], errors='coerce') < 0).any():
+            warnings.warn(
+                f"`{value_col}` contains negative values; links with value <= 0 are not "
+                "drawn. Pass magnitudes (abs) and use node_value_labels for signs.",
+                stacklevel=2,
+            )
 
         if node_colors is None:
             node_colors = {}
@@ -1125,7 +963,7 @@ class SankeyRaceMultiLayerParallel:
 
         instance = cls(layers=layers, node_colors=node_colors)
 
-        # Processar frames com .values (vetorizado)
+        # Build frames (vectorized via .values)
         for time_val in sorted(df[time_col].unique()):
             df_t = df[df[time_col] == time_val]
             src_arr = df_t[source_col].values
@@ -1134,7 +972,6 @@ class SankeyRaceMultiLayerParallel:
             links = list(zip(src_arr, tgt_arr, val_arr))
             instance.frames.append({'time_label': str(time_val), 'links': links})
 
-        # Pré-calcular global_max
         instance._global_max_cache = instance._compute_global_max()
 
         return instance
@@ -1156,7 +993,7 @@ class SankeyRaceMultiLayerParallel:
         return node_values
 
     def _compute_global_max(self):
-        """Calcula valor máximo global."""
+        """Compute the global maximum node throughput across all frames."""
         if not self.frames:
             return 1
 
@@ -1178,7 +1015,7 @@ class SankeyRaceMultiLayerParallel:
 
     def _compute_ranking_positions(self, node_values, plot_height, margin_top_ratio,
                                     margin_bottom_ratio, ascending):
-        """Calcula posições Y baseadas no ranking por camada (sem stacking)."""
+        """Compute Y positions by per-layer ranking (no stacking)."""
         margin_top = plot_height * margin_top_ratio
         margin_bottom = plot_height * margin_bottom_ratio
         usable_height = plot_height - margin_top - margin_bottom
@@ -1201,10 +1038,10 @@ class SankeyRaceMultiLayerParallel:
     def _compute_stacked_positions(self, node_values, plot_height, bar_height_ratio,
                                    margin_top_ratio, margin_bottom_ratio, gap,
                                    fixed_max=None):
-        """Calcula posições Y no modo stacked (empilhado, sem ranking).
+        """Compute Y positions in stacked mode (no ranking).
 
-        fixed_max: se fornecido, usa essa escala GLOBAL fixa em vez do máximo do
-        frame -> barras crescem em valor absoluto entre frames (ex: explosão da receita).
+        fixed_max: if given, use this fixed GLOBAL scale instead of the frame max,
+        so bars grow in absolute value between frames (e.g. revenue "explosion").
         """
         margin_top = plot_height * margin_top_ratio
         margin_bottom = plot_height * margin_bottom_ratio
@@ -1214,7 +1051,7 @@ class SankeyRaceMultiLayerParallel:
             max_layer_total = fixed_max
         else:
             layer_totals = [sum(node_values.get(node, 0) for node in layer_nodes)
-                           for layer_nodes in self.layers]
+                            for layer_nodes in self.layers]
             max_layer_total = max(layer_totals) if layer_totals else 1
         stacked_height = usable_height * bar_height_ratio
         scale = stacked_height / max_layer_total if max_layer_total > 0 else 1
@@ -1225,7 +1062,7 @@ class SankeyRaceMultiLayerParallel:
             if n_nodes == 0:
                 continue
 
-            # Mantém ordem original (sem sorting)
+            # Keep original order (no sorting)
             heights = [max(node_values.get(node, 0) * scale, 0.1) for node in layer_nodes]
             total_height = sum(heights) + gap * (n_nodes - 1) if n_nodes > 1 else sum(heights)
             start_y = margin_bottom + (usable_height - total_height) / 2 + total_height
@@ -1239,21 +1076,21 @@ class SankeyRaceMultiLayerParallel:
 
         return positions
 
-    def _compute_fixed_positions(self, node_values, plot_height, global_max, bar_height_ratio,
+    def _compute_fixed_positions(self, node_values, plot_height,
                                  margin_top_ratio, margin_bottom_ratio):
-        """Calcula posições Y fixas (sem ranking, sem stacking)."""
+        """Compute fixed Y positions (no ranking, no stacking)."""
         margin_top = plot_height * margin_top_ratio
         margin_bottom = plot_height * margin_bottom_ratio
         usable_height = plot_height - margin_top - margin_bottom
+
+        max_nodes_in_layer = max(len(layer) for layer in self.layers)
+        available_height_per_slot = usable_height / max(1, max_nodes_in_layer)
 
         positions = {}
         for layer_nodes in self.layers:
             n_nodes = len(layer_nodes)
             if n_nodes == 0:
                 continue
-
-            max_nodes_in_layer = max(len(layer) for layer in self.layers)
-            available_height_per_slot = usable_height / max_nodes_in_layer
 
             for i, node in enumerate(layer_nodes):
                 y_center = margin_bottom + available_height_per_slot * (n_nodes - 1 - i + 0.5)
@@ -1270,17 +1107,14 @@ class SankeyRaceMultiLayerParallel:
         Compute dynamic colors for nodes based on their values.
 
         Args:
-            node_values: Dict mapping node names to their values
-            mode: Coloring mode (RANKING, VALUE, GLOBAL_VALUE, PERCENTILE)
-            colormap: Can be:
-                - ColorPalette enum (e.g., ColorPalette.VIRIDIS)
-                - Matplotlib colormap name (e.g., 'RdYlGn', 'viridis')
-                - List of hex colors for custom palette (e.g., ['#FF0000', '#00FF00'])
-            global_min: Min value for global normalization
-            global_max: Max value for global normalization
+            node_values: Dict mapping node names to their values.
+            mode: Coloring mode (RANKING, VALUE, GLOBAL_VALUE, PERCENTILE, INTENSITY).
+            colormap: ColorPalette enum, matplotlib colormap name, or list of hex colors.
+            global_min: Min value for global normalization.
+            global_max: Max value for global normalization.
 
         Returns:
-            Dict mapping node names to hex color strings
+            Dict mapping node names to hex color strings.
         """
         if isinstance(mode, str):
             mode = DynamicColorMode(mode.lower())
@@ -1288,11 +1122,9 @@ class SankeyRaceMultiLayerParallel:
         colors = {}
 
         if mode == DynamicColorMode.STATIC:
-            # Return original static colors
             return self.node_colors.copy()
 
         elif mode == DynamicColorMode.RANKING:
-            # Color by rank within each layer (1st = green, last = red)
             for layer in self.layers:
                 layer_values = [(node, node_values.get(node, 0)) for node in layer]
                 sorted_nodes = sorted(layer_values, key=lambda x: -x[1])
@@ -1300,7 +1132,6 @@ class SankeyRaceMultiLayerParallel:
                     colors[node] = get_ranking_color(rank, len(layer), colormap)
 
         elif mode == DynamicColorMode.VALUE:
-            # Color by value (normalized within each layer)
             for layer in self.layers:
                 layer_vals = [node_values.get(node, 0) for node in layer]
                 min_val = min(layer_vals) if layer_vals else 0
@@ -1310,7 +1141,6 @@ class SankeyRaceMultiLayerParallel:
                     colors[node] = get_dynamic_color(val, min_val, max_val, colormap)
 
         elif mode == DynamicColorMode.GLOBAL_VALUE:
-            # Color by value (normalized globally)
             if global_min is None:
                 global_min = min(node_values.values()) if node_values else 0
             if global_max is None:
@@ -1319,13 +1149,11 @@ class SankeyRaceMultiLayerParallel:
                 colors[node] = get_dynamic_color(node_values[node], global_min, global_max, colormap)
 
         elif mode == DynamicColorMode.PERCENTILE:
-            # Color by percentile within each layer
             for layer in self.layers:
                 layer_vals = sorted([node_values.get(node, 0) for node in layer])
                 n = len(layer_vals)
                 for node in layer:
                     val = node_values.get(node, 0)
-                    # Find percentile
                     rank = sum(1 for v in layer_vals if v <= val)
                     percentile = rank / n if n > 0 else 0.5
                     colors[node] = get_dynamic_color(percentile, 0, 1, colormap)
@@ -1345,13 +1173,13 @@ class SankeyRaceMultiLayerParallel:
 
     def _compute_stacked_ranking_positions(self, node_values, plot_height, bar_height_ratio,
                                            margin_top_ratio, margin_bottom_ratio, gap, ascending):
-        """Calcula posições Y no modo stacked + ranking."""
+        """Compute Y positions in stacked + ranking mode."""
         margin_top = plot_height * margin_top_ratio
         margin_bottom = plot_height * margin_bottom_ratio
         usable_height = plot_height - margin_top - margin_bottom
 
         layer_totals = [sum(node_values.get(node, 0) for node in layer_nodes)
-                       for layer_nodes in self.layers]
+                        for layer_nodes in self.layers]
         max_layer_total = max(layer_totals) if layer_totals else 1
         stacked_height = usable_height * bar_height_ratio
         scale = stacked_height / max_layer_total if max_layer_total > 0 else 1
@@ -1378,25 +1206,21 @@ class SankeyRaceMultiLayerParallel:
 
     def _precompute_frames(self, total_frames, plot_height, bar_height_ratio,
                            margin_top_ratio, margin_bottom_ratio, stacked_gap, ascending,
-                           mode='stacked_ranking', global_max=None,
+                           mode='stacked_ranking',
                            dynamic_color_mode: Union[DynamicColorMode, str] = DynamicColorMode.STATIC,
                            dynamic_colormap: Union[ColorPalette, str, List[str]] = 'RdYlGn',
                            node_value_labels_per_frame: Optional[List[Dict[str, str]]] = None,
                            fixed_layer_max: Optional[float] = None):
-        """Pré-computa todos os frames interpolados.
+        """Pre-compute every interpolated frame.
 
         Args:
-            mode: 'stacked_ranking', 'ranking', 'stacked', ou 'fixed'
-            dynamic_color_mode: Mode for dynamic node coloring (STATIC, RANKING, VALUE, etc.)
-            dynamic_colormap: Colormap for dynamic colors. Can be:
-                - ColorPalette enum
-                - Matplotlib colormap name (string)
-                - List of hex colors for custom palette
+            mode: 'stacked_ranking', 'ranking', 'stacked', or 'fixed'.
+            dynamic_color_mode: Dynamic node coloring mode.
+            dynamic_colormap: Colormap for dynamic colors.
         """
         n_data_frames = len(self.frames)
-        frames_per_period = max(1, total_frames // n_data_frames)
+        frames_per_period = max(1, total_frames // max(1, n_data_frames))
 
-        # Convert string to enum if needed
         if isinstance(dynamic_color_mode, str):
             dynamic_color_mode = DynamicColorMode(dynamic_color_mode.lower())
 
@@ -1414,7 +1238,7 @@ class SankeyRaceMultiLayerParallel:
                 global_min_val = min(all_values)
                 global_max_val = max(all_values)
 
-        # Calcular valores/posições/cores para cada frame de dados
+        # Per data-frame values / positions / colors
         data_info = []
         for frame in self.frames:
             values = self._compute_node_values(frame['links'])
@@ -1436,11 +1260,9 @@ class SankeyRaceMultiLayerParallel:
                 )
             else:  # fixed
                 positions = self._compute_fixed_positions(
-                    values, plot_height, global_max or self._get_global_max(),
-                    bar_height_ratio, margin_top_ratio, margin_bottom_ratio
+                    values, plot_height, margin_top_ratio, margin_bottom_ratio
                 )
 
-            # Compute dynamic colors if enabled
             if use_dynamic_colors:
                 colors = self._compute_dynamic_colors(
                     values, dynamic_color_mode, dynamic_colormap,
@@ -1485,7 +1307,6 @@ class SankeyRaceMultiLayerParallel:
                     vb = values_b.get(node, va)
                     interp_values[node] = va + (vb - va) * t
 
-                # Interpolate colors if dynamic
                 interp_colors = None
                 if use_dynamic_colors and colors_a and colors_b:
                     interp_colors = {}
@@ -1494,7 +1315,6 @@ class SankeyRaceMultiLayerParallel:
                         cb = colors_b.get(node, '#888888')
                         interp_colors[node] = interpolate_color(ca, cb, t)
 
-                # Snap value labels to the same data frame as the time label
                 interp_labels = None
                 if node_value_labels_per_frame:
                     interp_labels = (node_value_labels_per_frame[i] if t < 0.5
@@ -1510,10 +1330,10 @@ class SankeyRaceMultiLayerParallel:
                     progress=i + t
                 ))
 
-        # Frames de hold
+        # Hold frames at the end
         last_frame, last_values, last_pos, last_colors = data_info[-1]
         last_labels = node_value_labels_per_frame[-1] if node_value_labels_per_frame else None
-        remaining = total_frames - len(interpolated)
+        remaining = max(0, total_frames - len(interpolated))
         for _ in range(remaining):
             interpolated.append(FrameData(
                 time_label=last_frame['time_label'],
@@ -1565,6 +1385,7 @@ class SankeyRaceMultiLayerParallel:
                 overlay_color: str = "#33E08A",
                 overlay_value_suffix: str = "",
                 overlay_x_labels: Optional[List[str]] = None,
+                overlay_badge: str = "",
                 audio_path: str = None,
                 audio_url: str = None,
                 audio_start: float = 0.0,
@@ -1572,54 +1393,57 @@ class SankeyRaceMultiLayerParallel:
                 yaxis_node: str = None,
                 yaxis_suffix: str = ""):
         """
-        Gera animação usando múltiplos processos em paralelo.
+        Render the animation using multiple parallel worker processes.
 
-        overlay_series: uma lista de valores (um por frame de dados) desenhada como
-            um mini-grafico de area que cresce ao longo do tempo, no rodape, mais um
-            "big number" discreto no canto. Util para mostrar crescimento (ex: receita).
-        overlay_label: rotulo do overlay (ex: "Revenue / quarter").
-        overlay_color: cor do overlay.
+        Positioning modes:
+            - ranking_mode=True,  stacked_mode=True  -> Stacked + Ranking (default):
+              nodes reorder by value AND resize proportionally.
+            - ranking_mode=True,  stacked_mode=False -> Ranking only:
+              nodes reorder by value but have UNIFORM heights.
+            - ranking_mode=False, stacked_mode=True  -> Stacked only:
+              fixed node order, heights vary by value.
+            - ranking_mode=False, stacked_mode=False -> Fixed:
+              fixed node order AND uniform heights (only links animate).
 
         Args:
-            ranking_mode: Se True, ordena nós por valor
-            stacked_mode: Se True, empilha nós proporcionalmente ao valor
-            n_workers: Número de processos (default: número de CPUs)
-            n_segments: Segmentos de gradiente (default: 50, igual ao original)
-            dynamic_color_mode: Modo de coloração dinâmica dos nós:
-                - "static": Cores fixas (comportamento original)
-                - "ranking": Cor por ranking na camada (1º=verde, último=vermelho)
-                - "value": Cor por valor normalizado na camada
-                - "global_value": Cor por valor normalizado globalmente
-                - "percentile": Cor por percentil na camada
-            dynamic_colormap: Colormap para cores dinâmicas. Pode ser:
-                - ColorPalette enum (ex: ColorPalette.VIRIDIS)
-                - Nome de colormap do matplotlib (ex: 'RdYlGn', 'viridis', 'coolwarm')
-                - Lista de cores hex para paleta customizada (ex: ['#FF0000', '#FFFF00', '#00FF00'])
-
-        Modos de posicionamento:
-            - ranking_mode=True, stacked_mode=True: Stacked + Ranking (padrão)
-              Nodes reorder by value AND resize proportionally
-            - ranking_mode=True, stacked_mode=False: Apenas Ranking
-              Nodes reorder by value but have UNIFORM heights
-            - ranking_mode=False, stacked_mode=True: Apenas Stacked
-              Fixed node order, heights vary by value
-            - ranking_mode=False, stacked_mode=False: Fixo
-              Fixed node order AND uniform heights (only links animate)
+            dynamic_color_mode: "static", "ranking", "value", "global_value",
+                "percentile", or "intensity".
+            dynamic_colormap: ColorPalette enum, matplotlib colormap name, or list of hex.
+            theme: "light" (default) or "dark" preset.
+            link_glow: Neon glow layers behind links (0 = none; 1-2 on dark bg).
+            absolute_scale: If True (stacked-only mode), bars use a fixed global scale
+                so absolute growth is visible across frames.
+            node_value_labels_per_frame: Per-data-frame {node: text} overrides (e.g.
+                accounting parentheses for negatives).
+            overlay_series: One value per data frame, drawn as a bar-chart-race style
+                footer chart with an evolving "big number".
+            overlay_label / overlay_color / overlay_value_suffix / overlay_x_labels /
+            overlay_badge: Overlay styling. ``overlay_badge`` is the corner tag (e.g. a
+                ticker like "NVDA"); empty by default.
+            yaxis_node / yaxis_suffix: Draw an evolving "$" value axis next to a node.
+            audio_path / audio_url: Background music (local MP3 or YouTube URL).
+            audio_start / audio_fade: Music start offset (s) and fade in/out (s).
+            n_workers: Number of processes (default: CPU count, capped at frame count).
+            n_segments: Gradient segments per link (default: 50).
         """
-        if n_workers is None:
-            n_workers = mp.cpu_count()
-
         if not self.frames:
-            raise ValueError("Nenhum frame adicionado.")
+            raise ValueError("No frames added.")
 
-        # Audio via YouTube: resolve a URL para um mp3 local ANTES de renderizar
-        # (assim falha cedo se algo der errado, sem desperdicar o render).
+        if absolute_scale and not (stacked_mode and not ranking_mode):
+            warnings.warn(
+                "absolute_scale only applies to stacked-only mode "
+                "(ranking_mode=False, stacked_mode=True); ignoring it.",
+                stacklevel=2,
+            )
+
+        # Audio via YouTube: resolve the URL to a local mp3 BEFORE rendering, so it
+        # fails fast (without wasting the render) if something goes wrong.
         if audio_url and not audio_path:
-            print(f"Baixando audio do YouTube: {audio_url}")
+            print(f"Downloading audio from YouTube: {audio_url}")
             audio_path = youtube_to_mp3(audio_url)
             print(f"  -> {audio_path}")
 
-        # Presets de tema (sobrescreviveis por kwargs explicitos)
+        # Theme presets (overridable by explicit kwargs)
         if theme == "dark":
             _preset = dict(bg_color="#0a0a12", label_color="#EAEAF2",
                            node_edge_color="#1a1a28", title_text_color="#FFFFFF",
@@ -1634,7 +1458,7 @@ class SankeyRaceMultiLayerParallel:
         title_text_color = title_text_color or _preset["title_text_color"]
         title_bg_color = _preset["title_bg_color"] if theme == "dark" else title_bg_color
 
-        # Determinar modo
+        # Determine mode
         if stacked_mode and ranking_mode:
             mode = 'stacked_ranking'
             mode_name = 'Stacked + Ranking'
@@ -1646,9 +1470,9 @@ class SankeyRaceMultiLayerParallel:
             mode_name = 'Stacked'
         else:
             mode = 'fixed'
-            mode_name = 'Fixo'
+            mode_name = 'Fixed'
 
-        # Configurações de qualidade
+        # Quality settings
         quality_settings = {
             "low": {"dpi": 72, "bitrate": "1500k"},
             "medium": {"dpi": 120, "bitrate": "3000k"},
@@ -1657,10 +1481,11 @@ class SankeyRaceMultiLayerParallel:
         settings = quality_settings.get(quality, quality_settings["medium"])
 
         plot_width, plot_height = figsize
-        global_max = self._get_global_max()
         total_frames = int(fps * duration_seconds)
+        if total_frames < 1:
+            raise ValueError("fps * duration_seconds must be >= 1 frame.")
 
-        # Escala global fixa (crescimento absoluto entre frames), só no modo stacked
+        # Fixed global scale (absolute growth between frames), stacked-only mode
         fixed_layer_max = None
         if absolute_scale and mode == 'stacked':
             flm = 0.0
@@ -1670,7 +1495,6 @@ class SankeyRaceMultiLayerParallel:
                     flm = max(flm, sum(vals.get(n, 0) for n in layer_nodes))
             fixed_layer_max = flm if flm > 0 else None
 
-        # Parse dynamic color mode
         if isinstance(dynamic_color_mode, str):
             dynamic_color_mode_enum = DynamicColorMode(dynamic_color_mode.lower())
         else:
@@ -1678,44 +1502,47 @@ class SankeyRaceMultiLayerParallel:
 
         color_mode_name = dynamic_color_mode_enum.value.replace('_', ' ').title()
 
-        print(f"Configuracoes (MULTI-LAYER PARALLEL - {n_workers} workers):")
-        print(f"  - Camadas: {len(self.layers)}")
-        print(f"  - Nos por camada: {[len(l) for l in self.layers]}")
-        print(f"  - FPS: {fps}, Duracao: {duration_seconds}s")
-        print(f"  - Qualidade: {quality}")
-        print(f"  - Total de frames: {total_frames}")
-        print(f"  - Segmentos de gradiente: {n_segments}")
-        print(f"  - Modo posicionamento: {mode_name}")
-        print(f"  - Modo cor dinamica: {color_mode_name}")
+        print(f"Settings (MULTI-LAYER PARALLEL):")
+        print(f"  - Layers: {len(self.layers)}")
+        print(f"  - Nodes per layer: {[len(l) for l in self.layers]}")
+        print(f"  - FPS: {fps}, Duration: {duration_seconds}s")
+        print(f"  - Quality: {quality}")
+        print(f"  - Total frames: {total_frames}")
+        print(f"  - Gradient segments: {n_segments}")
+        print(f"  - Positioning mode: {mode_name}")
+        print(f"  - Dynamic color mode: {color_mode_name}")
         if dynamic_color_mode_enum != DynamicColorMode.STATIC:
             print(f"  - Colormap: {dynamic_colormap}")
 
-        # Pré-computar frames
-        print(f"\nPre-computando {total_frames} frames...")
+        # Pre-compute frames
+        print(f"\nPre-computing {total_frames} frames...")
         t0 = time.time()
         all_frames = self._precompute_frames(
             total_frames, plot_height, bar_height_ratio,
             margin_top, margin_bottom, stacked_gap, ascending,
-            mode=mode, global_max=global_max,
+            mode=mode,
             dynamic_color_mode=dynamic_color_mode_enum,
             dynamic_colormap=dynamic_colormap,
             node_value_labels_per_frame=node_value_labels_per_frame,
             fixed_layer_max=fixed_layer_max
         )
-        print(f"  Pre-computacao: {time.time() - t0:.2f}s")
+        print(f"  Pre-computation: {time.time() - t0:.2f}s")
 
-        # Dividir em chunks
-        chunk_size = len(all_frames) // n_workers
-        chunks = []
-        for i in range(n_workers):
-            start = i * chunk_size
-            end = start + chunk_size if i < n_workers - 1 else len(all_frames)
-            chunks.append(all_frames[start:end])
+        # Cap workers at the number of frames so no worker gets an empty chunk
+        # (empty chunks produce zero-frame mp4s that corrupt the concat).
+        if n_workers is None:
+            n_workers = mp.cpu_count()
+        n_workers = max(1, min(n_workers, len(all_frames)))
 
-        # Diretório temporário
+        # Split into balanced chunks (distribute the remainder)
+        chunks = [list(c) for c in np.array_split(all_frames, n_workers)]
+        chunks = [c for c in chunks if c]
+        n_workers = len(chunks)
+        print(f"  Workers: {n_workers}")
+
         temp_dir = tempfile.mkdtemp(prefix="sankey_multi_parallel_")
 
-        # Config compartilhada (MESMOS parâmetros do original)
+        # Shared config
         config = {
             'width': int(figsize[0] * settings['dpi']),
             'height': int(figsize[1] * settings['dpi']),
@@ -1733,7 +1560,6 @@ class SankeyRaceMultiLayerParallel:
             'plot_height': plot_height,
             'node_width': node_width,
             'padding': padding,
-            'global_max': global_max,
             'font_size': font_size,
             'bar_height_ratio': bar_height_ratio,
             'margin_top_ratio': margin_top,
@@ -1754,38 +1580,38 @@ class SankeyRaceMultiLayerParallel:
             'overlay_color': overlay_color,
             'overlay_value_suffix': overlay_value_suffix,
             'overlay_x_labels': overlay_x_labels,
+            'overlay_badge': overlay_badge,
             'yaxis_node': yaxis_node,
             'yaxis_suffix': yaxis_suffix,
         }
 
-        # Preparar argumentos
         worker_args = [(i, chunks[i], config) for i in range(n_workers)]
 
-        print(f"\nRenderizando em {n_workers} processos paralelos...")
+        print(f"\nRendering on {n_workers} parallel processes...")
         t0 = time.time()
 
-        # Executar em paralelo
         with mp.Pool(processes=n_workers) as pool:
             results = pool.map(_render_chunk, worker_args)
 
-        tempo_render = time.time() - t0
-        print(f"  Renderizacao paralela: {tempo_render:.2f}s ({total_frames / tempo_render:.1f} fps)")
+        render_time = time.time() - t0
+        print(f"  Parallel rendering: {render_time:.2f}s ({total_frames / render_time:.1f} fps)")
 
-        # Ordenar e concatenar
+        # Sort and concatenate
         results.sort(key=lambda x: x[0])
         chunk_paths = [r[1] for r in results]
 
-        print(f"\nConcatenando {n_workers} chunks...")
+        print(f"\nConcatenating {n_workers} chunks...")
         t0_concat = time.time()
 
-        # Criar lista para ffmpeg concat
         list_path = os.path.join(temp_dir, "chunks.txt")
         with open(list_path, 'w') as f:
             for path in chunk_paths:
-                f.write(f"file '{path}'\n")
+                # FFmpeg concat demuxer: single quotes, escaped for safety
+                safe = path.replace("'", "'\\''")
+                f.write(f"file '{safe}'\n")
 
-        # Concatena os chunks num video (mudo). Se houver audio, faz isso num
-        # arquivo temporario e depois mixa a trilha; senao, ja sai no output_path.
+        # Concatenate the chunks into a (silent) video. If audio is requested, do it
+        # in a temp file and then mux the track; otherwise write output_path directly.
         silent_path = os.path.join(temp_dir, "video_silent.mp4") if audio_path else output_path
         concat_cmd = [
             'ffmpeg', '-y',
@@ -1793,20 +1619,22 @@ class SankeyRaceMultiLayerParallel:
             '-safe', '0',
             '-i', list_path,
             '-c', 'copy',
-            silent_path
+            silent_path,
         ]
 
         result = subprocess.run(concat_cmd, capture_output=True)
+        if result.returncode != 0 or not os.path.exists(silent_path):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise RuntimeError(
+                "FFmpeg concat failed:\n" + result.stderr.decode(errors='ignore')[-1000:]
+            )
 
-        if result.returncode != 0:
-            print(f"Erro na concatenacao: {result.stderr.decode()}")
+        print(f"  Concatenation: {time.time() - t0_concat:.2f}s")
 
-        print(f"  Concatenacao: {time.time() - t0_concat:.2f}s")
-
-        # Mixar trilha de audio (MP3) se fornecida
+        # Mux the audio track (MP3) if provided
         if audio_path:
             if not os.path.exists(audio_path):
-                print(f"AVISO: audio nao encontrado ({audio_path}); salvando video sem som.")
+                print(f"WARNING: audio not found ({audio_path}); saving video without sound.")
                 shutil.copyfile(silent_path, output_path)
             else:
                 video_dur = total_frames / fps
@@ -1815,26 +1643,28 @@ class SankeyRaceMultiLayerParallel:
                 mux_cmd = [
                     'ffmpeg', '-y',
                     '-i', silent_path,
-                    '-ss', str(audio_start), '-i', audio_path,  # comeca a musica em audio_start
+                    '-ss', str(audio_start), '-i', audio_path,
                     '-map', '0:v', '-map', '1:a',
                     '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
                     '-af', afade,
                     '-t', str(video_dur), '-shortest',
-                    output_path
+                    output_path,
                 ]
                 mux = subprocess.run(mux_cmd, capture_output=True)
                 if mux.returncode != 0:
-                    print(f"Erro ao mixar audio: {mux.stderr.decode()[-800:]}")
+                    print(f"Error muxing audio: {mux.stderr.decode(errors='ignore')[-800:]}")
                     shutil.copyfile(silent_path, output_path)
                 else:
-                    print(f"  Audio mixado: {os.path.basename(audio_path)} (inicio em {audio_start}s)")
+                    print(f"  Audio muxed: {os.path.basename(audio_path)} (start at {audio_start}s)")
 
-        # Limpar
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-        tempo_total = tempo_render + (time.time() - t0_concat)
-        print(f"\nAnimacao salva em: {output_path}")
-        print(f"Tempo total: {tempo_total:.2f}s ({total_frames / tempo_total:.1f} fps efetivo)")
+        if not os.path.exists(output_path):
+            raise RuntimeError(f"Render finished but output was not produced: {output_path}")
+
+        total_time = render_time + (time.time() - t0_concat)
+        print(f"\nAnimation saved to: {output_path}")
+        print(f"Total time: {total_time:.2f}s ({total_frames / total_time:.1f} effective fps)")
 
         return output_path
 
@@ -1865,39 +1695,34 @@ class SankeyRaceMultiLayerParallel:
                    title_text_color: str = None,
                    link_alpha: float = 0.7,
                    link_glow: int = 0,
-                   node_value_labels: Dict[str, str] = None):
+                   node_value_labels: Dict[str, str] = None,
+                   yaxis_node: str = None,
+                   yaxis_suffix: str = ""):
         """
-        Salva um frame unico como imagem estatica (PNG, PDF, SVG).
+        Save a single frame as a static image (PNG, PDF, SVG).
+
+        Uses the same drawing code as :meth:`animate` (via the shared renderer), so a
+        static frame matches a video frame exactly. Dynamic node colors and the
+        time-series overlay are animation-only; the dynamic value axis (``yaxis_node``)
+        and ``node_value_labels`` are supported here too.
 
         Args:
-            output_path: Caminho do arquivo de saida (.png, .pdf, .svg)
-            frame_index: Indice do frame a ser salvo (0 = primeiro)
-            theme: "light" (padrao) ou "dark". Define um preset de cores de fundo,
-                   rotulos e borda. Pode ser sobrescrito por bg_color/label_color/etc.
-            bg_color: Cor de fundo da figura (sobrescreve o preset do tema)
-            label_color: Cor dos rotulos de nome dos nos
-            node_edge_color: Cor da borda dos nos
-            title_text_color: Cor do texto do titulo
-            link_alpha: Opacidade base dos links (0-1)
-            link_glow: Camadas de brilho neon atras dos links (0 = nenhum)
-            title: Titulo do grafico
-            figsize: Tamanho da figura (largura, altura)
-            dpi: Resolucao da imagem
-            node_width: Largura dos nos
-            ranking_mode: Se True, ordena nos por valor
-            stacked_mode: Se True, empilha nos proporcionalmente
-            n_segments: Segmentos de gradiente (default: 50)
+            output_path: Output path (.png, .pdf, .svg).
+            frame_index: Index of the frame to save (0 = first).
+            theme: "light" (default) or "dark" preset (overridable per-color kwarg).
 
         Returns:
-            Caminho do arquivo salvo
+            Path to the saved file.
         """
         if not self.frames:
-            raise ValueError("Nenhum frame adicionado.")
+            raise ValueError("No frames added.")
 
-        if frame_index >= len(self.frames):
-            raise ValueError(f"frame_index {frame_index} invalido. Total de frames: {len(self.frames)}")
+        if not 0 <= frame_index < len(self.frames):
+            raise ValueError(
+                f"frame_index {frame_index} is out of range. Total frames: {len(self.frames)}"
+            )
 
-        # Presets de tema (sobrescreviveis por kwargs explicitos)
+        # Theme presets (overridable by explicit kwargs)
         if theme == "dark":
             preset = dict(bg_color="#0a0a12", label_color="#EAEAF2",
                           node_edge_color="#1a1a28", title_text_color="#FFFFFF",
@@ -1912,7 +1737,7 @@ class SankeyRaceMultiLayerParallel:
         title_text_color = title_text_color or preset["title_text_color"]
         title_bg_color = preset["title_bg_color"] if theme == "dark" else title_bg_color
 
-        # Determinar modo
+        # Determine mode
         if stacked_mode and ranking_mode:
             mode = 'stacked_ranking'
         elif ranking_mode:
@@ -1923,9 +1748,7 @@ class SankeyRaceMultiLayerParallel:
             mode = 'fixed'
 
         plot_width, plot_height = figsize
-        global_max = self._get_global_max()
 
-        # Computar dados do frame
         frame = self.frames[frame_index]
         values = self._compute_node_values(frame['links'])
 
@@ -1945,8 +1768,7 @@ class SankeyRaceMultiLayerParallel:
             )
         else:
             positions = self._compute_fixed_positions(
-                values, plot_height, global_max,
-                bar_height_ratio, margin_top, margin_bottom
+                values, plot_height, margin_top, margin_bottom
             )
 
         frame_data = FrameData(
@@ -1957,7 +1779,6 @@ class SankeyRaceMultiLayerParallel:
             node_value_labels=node_value_labels
         )
 
-        # Criar figura
         fig, ax = plt.subplots(figsize=figsize)
         ax.set_xlim(-padding, plot_width + padding)
         ax.set_ylim(0, plot_height)
@@ -1965,16 +1786,15 @@ class SankeyRaceMultiLayerParallel:
         ax.set_facecolor(bg_color)
         fig.patch.set_facecolor(bg_color)
 
-        # Renderizar frame
         render_frame_high_quality(
             ax, frame_data, self.layers, self.node_colors,
             plot_width, plot_height, node_width, font_size,
             n_segments, bar_height_ratio, mode in ['stacked_ranking', 'stacked'],
             label_color=label_color, node_edge_color=node_edge_color,
-            link_alpha=link_alpha, link_glow=link_glow
+            link_alpha=link_alpha, link_glow=link_glow,
+            padding=padding, yaxis_node=yaxis_node, yaxis_suffix=yaxis_suffix,
         )
 
-        # Titulo
         if title:
             time_label = frame_data.time_label
             full_title = f"{title}\n{time_label}" if time_label else title
@@ -1991,73 +1811,60 @@ class SankeyRaceMultiLayerParallel:
                     facecolor=bg_color, edgecolor='none')
         plt.close(fig)
 
-        print(f"Frame salvo em: {output_path}")
+        print(f"Frame saved to: {output_path}")
         return output_path
 
 
-# Alias
+# Backward-compatible alias
 SankeyRaceMultiLayer = SankeyRaceMultiLayerParallel
 
 
 # =============================================================================
-# Teste
+# Self-test
 # =============================================================================
 
 if __name__ == "__main__":
     mp.freeze_support()
 
     print("=" * 70)
-    print("TESTE: Sankey Multi-Layer PARALLEL")
+    print("TEST: Sankey Multi-Layer PARALLEL")
     print("=" * 70)
 
-    # Dados de teste
-    data = []
-    exportadores = ["Brazil", "USA", "China", "India"]
-    importadores = ["EU", "Japan", "Mexico", "Canada"]
+    exporters = ["Brazil", "USA", "China", "India"]
+    importers = ["EU", "Japan", "Mexico", "Canada"]
 
-    fluxos = {
+    flows = {
         ("Brazil", "EU"): 10, ("Brazil", "Japan"): 8, ("Brazil", "Mexico"): 5,
         ("USA", "EU"): 15, ("USA", "Mexico"): 12, ("USA", "Canada"): 8,
         ("China", "EU"): 20, ("China", "Japan"): 18, ("China", "Mexico"): 10,
         ("India", "EU"): 6, ("India", "Japan"): 4, ("India", "Canada"): 3,
     }
 
-    for ano in range(2020, 2024):
-        mult = 1 + (ano - 2020) * 0.1
-        for (src, tgt), val in fluxos.items():
-            data.append({"ano": ano, "origem": src, "destino": tgt, "valor": val * mult})
+    data = []
+    for year in range(2020, 2024):
+        mult = 1 + (year - 2020) * 0.1
+        for (src, tgt), val in flows.items():
+            data.append({"year": year, "source": src, "target": tgt, "value": val * mult})
 
     df = pd.DataFrame(data)
-    layers = [exportadores, importadores]
+    layers = [exporters, importers]
 
-    # Criar Sankey
     sankey = SankeyRaceMultiLayerParallel.from_dataframe(
-        df=df,
-        layers=layers,
-        time_col="ano",
-        source_col="origem",
-        target_col="destino",
-        value_col="valor",
+        df=df, layers=layers,
+        time_col="year", source_col="source", target_col="target", value_col="value",
     )
 
-    # Gerar animação
-    print("\n")
     sankey.animate(
-        output_path="teste_multi_parallel.mp4",
+        output_path="test_multi_parallel.mp4",
         title="Multi-Layer Parallel Test",
-        figsize=(16, 10),
-        fps=24,
-        duration_seconds=5.0,
-        quality="medium",
-        n_workers=4,
+        figsize=(16, 10), fps=24, duration_seconds=5.0, quality="medium", n_workers=4,
     )
 
-    # Limpar
     try:
-        os.remove("teste_multi_parallel.mp4")
-    except:
+        os.remove("test_multi_parallel.mp4")
+    except OSError:
         pass
 
     print("\n" + "=" * 70)
-    print("Teste concluido!")
+    print("Test complete!")
     print("=" * 70)

@@ -10,7 +10,7 @@ import multiprocessing as mp
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from sankey_race_multi_layers_parallel import SankeyRaceMultiLayerParallel
+from gradient_sankey import SankeyRaceMultiLayerParallel
 from nvidia_dre import build, to_flows
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -38,8 +38,28 @@ def fmt(v_b: float) -> str:
     return f"({s})" if v_b < 0 else s
 
 
+def fetch_stock_overlay(start_year, order, by_q):
+    """NVDA split-adjusted close, sampled at each quarter-end. Returns None
+    (and warns) if yfinance is unavailable or offline, so the flow still renders."""
+    try:
+        import yfinance as yf
+        stock = yf.Ticker("NVDA").history(start=f"{start_year}-01-01", auto_adjust=True)["Close"]
+        if stock.empty:
+            raise RuntimeError("yfinance returned no NVDA history")
+        stock.index = stock.index.tz_localize(None)
+        first = stock.index.min()
+        overlay = []
+        for q in order:
+            ts = pd.Timestamp(by_q[q]["period"])
+            overlay.append(float('nan') if ts < first else float(stock.asof(ts)))
+        return overlay
+    except Exception as e:                       # offline / API change / not installed
+        print(f"  (stock overlay unavailable: {e}; rendering without it)")
+        return None
+
+
 def main(args):
-    wide = build()
+    wide = build(refresh=args.refresh)
     # Start the time series at a given year (default 2015)
     wide = wide[wide["period"] >= f"{args.start_year}-01-01"].reset_index(drop=True)
     flows = to_flows(wide)
@@ -51,8 +71,6 @@ def main(args):
     node_colors = {n: POS_COLORS[i] for layer in layers for i, n in enumerate(layer)}
 
     # Per-quarter parenthesized $B labels, aligned to the library's sorted order
-    wide = wide.assign(quarter=flows.drop_duplicates("period").set_index("period")
-                       .reindex(wide["period"])["quarter"].values)
     order = sorted(flows["quarter"].unique())
     by_q = {r["quarter"]: r for _, r in wide.iterrows()}
     labels_per_frame = [
@@ -60,11 +78,7 @@ def main(args):
         for q in order
     ]
 
-    # NVDA stock (adjusted close), sampled at each quarter-end -> growth overlay
-    import yfinance as yf
-    stock = yf.Ticker("NVDA").history(start=f"{args.start_year}-01-01", auto_adjust=True)["Close"]
-    stock.index = stock.index.tz_localize(None)
-    overlay = [float(stock.asof(pd.Timestamp(by_q[q]["period"]))) for q in order]
+    overlay = fetch_stock_overlay(args.start_year, order, by_q)
 
     sankey = SankeyRaceMultiLayerParallel.from_dataframe(
         df=flows, layers=layers,
@@ -90,6 +104,7 @@ def main(args):
         overlay_color="#7CFF6B",
         overlay_value_suffix="",
         overlay_x_labels=order,            # year ticks on the stock chart's x-axis
+        overlay_badge="NVDA",              # corner ticker tag
         # Background music (optional): a local mp3 (--audio) OR a YouTube URL (--audio-url).
         audio_path=args.audio,
         audio_url=args.audio_url,
@@ -112,4 +127,6 @@ if __name__ == "__main__":
                          "Timestamps in the URL are ignored.")
     ap.add_argument("--audio-start", type=float, default=0.0,
                     help="Seconds into the track where playback begins (e.g. start at the drop).")
+    ap.add_argument("--refresh", action="store_true",
+                    help="Re-scrape SEC EDGAR instead of using the cached nvidia_dre_wide.csv.")
     main(ap.parse_args())

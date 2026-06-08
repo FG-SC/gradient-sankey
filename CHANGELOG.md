@@ -3,6 +3,40 @@
 All notable changes to **gradient-sankey** are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.0] — 2026-06-08 — Hardening, packaging & repo cleanup
+
+Quality pass over the whole repo. Backward‑compatible except for the module
+rename (update imports: `sankey_race_multi_layers_parallel` → `gradient_sankey`).
+
+### Added
+- **Packaging** — `pyproject.toml` (PEP 621): `pip install -e .` with optional
+  extras `[finance]` (requests + yfinance) and `[audio]` (yt‑dlp). `__version__`.
+- **Test suite** — `tests/` (pytest): unit tests for palettes/colors/positions
+  and validation, plus ffmpeg‑gated render smoke tests (`-m slow`).
+- **Input validation** — clear errors for empty data, missing columns, NaN
+  values, duplicate node names across layers, and empty layers.
+- `overlay_badge` — configurable corner tag for the overlay (was a hardcoded
+  "NVDA"); `save_frame` now also supports `yaxis_node` / `yaxis_suffix`.
+
+### Changed
+- **Single drawing path** — the static and parallel renderers now share one
+  `_draw_frame`, so a `save_frame` image matches a video frame exactly.
+- **Robust rendering** — `n_workers` is capped at the frame count (no more empty
+  chunks corrupting short clips), the FFmpeg subprocess and figure are always
+  cleaned up, and concat/mux failures raise instead of silently "succeeding".
+- **Module renamed** `sankey_race_multi_layers_parallel.py` → `gradient_sankey.py`;
+  English docstrings; dead parameters removed; specific (not bare) excepts.
+- **NVIDIA example** — derives the missing fiscal **Q4** (FullYear − 9‑month YTD),
+  uses fiscal‑quarter labels, retries SEC requests with a proper User‑Agent, and
+  **caches** to `nvidia_dre_wide.csv` so renders are reproducible/offline
+  (`--refresh` to re‑scrape). The stock overlay degrades gracefully when offline.
+- `requirements.txt` is now core‑only; optional deps live in `pyproject.toml`.
+
+### Fixed
+- `.gitignore` negation for the shipped demo `.mp4` (an inline comment had
+  silently broken the rule).
+- Removed abandoned scratch files (`ai_model_boom*`, `poc_dark_frame*`, …).
+
 ## [1.0.0] — 2026-06-08 — Major update: animation toolkit, themes, overlays & audio
 
 A big, backward‑compatible expansion. Everything from the first release still
