@@ -3,6 +3,21 @@
 All notable changes to **gradient-sankey** are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.1] — 2026-06-09 — Gallery & Jupyter docs
+
+Documentation-only release (no API or behavior changes) so the PyPI project page
+carries the new material.
+
+### Added
+- **README gallery** — rendered examples (energy system, multi-layer funnel, the
+  `dark`/`light`/`editorial` theme trio, a custom theme) plus an animation, with
+  images served over absolute URLs so they render on both GitHub and PyPI.
+- **"Using it in Jupyter / VS Code"** note — the `%pip install` fix for a
+  `ModuleNotFoundError` caused by the notebook kernel pointing at a different
+  Python than the terminal's `pip`.
+- A runnable **gallery notebook** (`notebooks/gradient_sankey_gallery.ipynb`)
+  that installs from PyPI and builds each example, ending with an animation.
+
 ## [1.2.0] — 2026-06-09 — A first-class `Theme` design system
 
 The library now treats *design* as a first-class concern alongside animation:
