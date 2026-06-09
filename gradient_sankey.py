@@ -23,9 +23,10 @@ from matplotlib.colors import to_rgb
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Optional, Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache
+import copy
 import subprocess
 import time
 import warnings
@@ -34,7 +35,7 @@ import tempfile
 import shutil
 import os
 
-__version__ = "1.1.3"
+__version__ = "1.2.0"
 
 
 # =============================================================================
@@ -292,6 +293,119 @@ DEFAULT_GRADIENT_SEGMENTS = 50
 
 
 # =============================================================================
+# Design system — themes & styles (the single source of truth for "how it
+# looks", kept separate from "what the data is" and "how it animates")
+# =============================================================================
+
+@dataclass
+class NodeStyle:
+    """Visual style of the node rectangles and their name labels."""
+    width: float = 0.5
+    corner_radius: float = 0.05      # rounded-rectangle radius
+    pad: float = 0.02                # box padding around the node
+    edge_color: str = "#333333"
+    edge_width: float = 1.5
+    label_plate_alpha: float = 0.7   # opacity of the backing plate behind name
+                                     # labels so they stay legible over ribbons
+                                     # (0 = no plate)
+
+
+@dataclass
+class LinkStyle:
+    """Visual style of the gradient links."""
+    alpha: float = 0.7
+    glow: int = 0                    # neon glow layers (0 = none; 1-2 on dark)
+    segments: int = DEFAULT_GRADIENT_SEGMENTS   # gradient trapezoids per link
+
+
+@dataclass
+class TypeScale:
+    """Typographic hierarchy. Label/tick sizes derive from ``base``."""
+    base: int = 10                   # base size for value labels & ticks
+    title: int = 18
+
+
+@dataclass
+class Theme:
+    """A complete, named look — the single object that controls appearance.
+
+    Pass it once::
+
+        sk.animate("reel.mp4", theme=Theme.dark())
+        sk.save_frame("frame.png", theme=Theme.editorial())
+
+    or by preset name (``theme="dark"``). Any individual styling keyword still
+    overrides the matching field, so existing calls keep working unchanged.
+    """
+    name: str = "light"
+    background: str = "white"        # figure / axes background
+    text: str = "#000000"           # node-name + value-axis label color
+    title_text: str = "#000000"
+    title_bg: str = "wheat"
+    title_bg_alpha: float = 0.9
+    node: NodeStyle = field(default_factory=NodeStyle)
+    link: LinkStyle = field(default_factory=LinkStyle)
+    type: TypeScale = field(default_factory=TypeScale)
+
+    # ------------------------------------------------------------------ presets
+    @classmethod
+    def light(cls):
+        """Default light look (white background, black text)."""
+        return cls(name="light")
+
+    @classmethod
+    def dark(cls):
+        """Dark, neon-friendly look — pairs with ``link.glow`` for the reel vibe."""
+        return cls(name="dark", background="#0a0a12", text="#EAEAF2",
+                   title_text="#FFFFFF", title_bg="#15151f",
+                   node=NodeStyle(edge_color="#1a1a28"))
+
+    @classmethod
+    def editorial(cls):
+        """Clean print/editorial look — warm paper, charcoal ink, hairline
+        borders, no glow, square-ish nodes, no label plate."""
+        return cls(name="editorial", background="#FAF7F2", text="#1A1A1A",
+                   title_text="#1A1A1A", title_bg="#ECE6DB", title_bg_alpha=0.95,
+                   node=NodeStyle(edge_color="#D8D0C4", edge_width=1.0,
+                                  corner_radius=0.02, label_plate_alpha=0.0),
+                   link=LinkStyle(alpha=0.85, glow=0))
+
+    # ----------------------------------------------------------------- resolver
+    @classmethod
+    def resolve(cls, theme, **ov):
+        """Return a fully-resolved :class:`Theme`.
+
+        ``theme`` may be a :class:`Theme`, a preset name
+        (``"dark"`` / ``"light"`` / ``"editorial"``) or ``None``. Any non-``None``
+        legacy keyword in ``ov`` (``bg_color``, ``label_color``,
+        ``node_edge_color``, ``title_text_color``, ``title_bg_color``,
+        ``title_bg_alpha``, ``font_size``, ``title_fontsize``, ``node_width``,
+        ``link_alpha``, ``link_glow``, ``n_segments``) overrides the preset, so
+        the old per-argument API keeps working.
+        """
+        if isinstance(theme, cls):
+            th = copy.deepcopy(theme)
+        else:
+            name = (theme or "light").lower()
+            factory = {"dark": cls.dark, "editorial": cls.editorial}.get(name, cls.light)
+            th = factory()
+        g = ov.get
+        if g("bg_color") is not None: th.background = ov["bg_color"]
+        if g("label_color") is not None: th.text = ov["label_color"]
+        if g("node_edge_color") is not None: th.node.edge_color = ov["node_edge_color"]
+        if g("title_text_color") is not None: th.title_text = ov["title_text_color"]
+        if g("title_bg_color") is not None: th.title_bg = ov["title_bg_color"]
+        if g("title_bg_alpha") is not None: th.title_bg_alpha = ov["title_bg_alpha"]
+        if g("font_size") is not None: th.type.base = ov["font_size"]
+        if g("title_fontsize") is not None: th.type.title = ov["title_fontsize"]
+        if g("node_width") is not None: th.node.width = ov["node_width"]
+        if g("link_alpha") is not None: th.link.alpha = ov["link_alpha"]
+        if g("link_glow") is not None: th.link.glow = ov["link_glow"]
+        if g("n_segments") is not None: th.link.segments = ov["n_segments"]
+        return th
+
+
+# =============================================================================
 # Shared low-level drawing helpers
 # =============================================================================
 
@@ -545,10 +659,13 @@ def _draw_frame(ax, frame_data, cfg):
             x, y, h = node_positions_rect[node]
             color = _node_hex(node)
 
+            _ns_pad = cfg.get('node_pad', 0.02)
+            _ns_cr = cfg.get('node_corner_radius', 0.05)
+            _ns_ew = cfg.get('node_edge_width', 1.5)
             rect = mpatches.FancyBboxPatch(
                 (x, y), node_width, h,
-                boxstyle="round,pad=0.02,rounding_size=0.05",
-                facecolor=color, edgecolor=node_edge_color, linewidth=1.5
+                boxstyle=f"round,pad={_ns_pad},rounding_size={_ns_cr}",
+                facecolor=color, edgecolor=node_edge_color, linewidth=_ns_ew
             )
             ax.add_patch(rect)
 
@@ -565,23 +682,36 @@ def _draw_frame(ax, frame_data, cfg):
             # bar) so negatives like "(5)" are never hidden.
             name_txt = f"{node}" if fits else f"{node}  {val_text}"
 
+            # Translucent backing plate so a name stays legible even when it sits
+            # over bright ribbons or a node edge (e.g. short middle-layer nodes).
+            # Plate must CONTRAST with the label text (which is light on dark
+            # themes, dark on light): derive it from label_color so it works in
+            # every theme and code path (bg_color isn't always in cfg).
+            _plate_alpha = cfg.get('label_plate_alpha', 0.7)
+            if _plate_alpha > 0:
+                _plate = get_text_color_for_background(label_color)
+                name_bbox = dict(boxstyle='round,pad=0.2', facecolor=_plate,
+                                 alpha=_plate_alpha, edgecolor='none')
+            else:
+                name_bbox = None
+
             if node == yaxis_node:
                 # Node with the value axis: name goes on top to free the left side
-                ax.text(x + node_width / 2, y + h + 0.15, name_txt,
+                ax.text(x + node_width / 2, y + h + 0.18, name_txt,
                         ha='center', va='bottom', fontsize=font_size, fontweight='bold',
-                        color=label_color)
+                        color=label_color, bbox=name_bbox)
             elif layer_idx == 0:
-                ax.text(x - 0.15, y + h / 2, name_txt,
+                ax.text(x - 0.18, y + h / 2, name_txt,
                         ha='right', va='center', fontsize=font_size, fontweight='bold',
-                        color=label_color)
+                        color=label_color, bbox=name_bbox)
             elif layer_idx == n_layers - 1:
-                ax.text(x + node_width + 0.15, y + h / 2, name_txt,
+                ax.text(x + node_width + 0.18, y + h / 2, name_txt,
                         ha='left', va='center', fontsize=font_size, fontweight='bold',
-                        color=label_color)
+                        color=label_color, bbox=name_bbox)
             else:
-                ax.text(x + node_width / 2, y + h + 0.15, name_txt,
+                ax.text(x + node_width / 2, y + h + 0.18, name_txt,
                         ha='center', va='bottom', fontsize=font_size - 1, fontweight='bold',
-                        color=label_color)
+                        color=label_color, bbox=name_bbox)
 
             if fits:
                 ax.text(x + node_width / 2, y + h / 2, val_text,
@@ -695,7 +825,9 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
                               n_segments, bar_height_ratio, stacked_mode,
                               label_color='#000000', node_edge_color='#333333',
                               link_alpha=0.7, link_glow=0,
-                              padding=1.2, yaxis_node=None, yaxis_suffix=""):
+                              padding=1.2, yaxis_node=None, yaxis_suffix="",
+                              node_corner_radius=0.05, node_pad=0.02,
+                              node_edge_width=1.5, label_plate_alpha=0.7):
     """
     Render a single high-quality Sankey frame onto ``ax`` (no title).
 
@@ -753,6 +885,10 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
         'node_edge_color': node_edge_color,
         'link_alpha': link_alpha,
         'link_glow': link_glow,
+        'node_corner_radius': node_corner_radius,
+        'node_pad': node_pad,
+        'node_edge_width': node_edge_width,
+        'label_plate_alpha': label_plate_alpha,
         'yaxis_node': yaxis_node,
         'yaxis_suffix': yaxis_suffix,
         '_t0': t0, '_t1': t1, '_t_mid': t_mid, '_f0': f0, '_f1': f1,
@@ -1420,7 +1556,7 @@ class SankeyRaceMultiLayerParallel:
                 margin_top: float = 0.12,
                 margin_bottom: float = 0.05,
                 title_fontsize: int = 18,
-                title_bg_color: str = "wheat",
+                title_bg_color: str = None,
                 title_bg_alpha: float = 0.9,
                 ranking_mode: bool = True,
                 stacked_mode: bool = True,
@@ -1430,7 +1566,7 @@ class SankeyRaceMultiLayerParallel:
                 n_segments: int = DEFAULT_GRADIENT_SEGMENTS,
                 dynamic_color_mode: Union[DynamicColorMode, str] = "static",
                 dynamic_colormap: Union[ColorPalette, str, List[str]] = "RdYlGn",
-                theme: str = "light",
+                theme: Union[str, "Theme"] = "light",
                 bg_color: str = None,
                 label_color: str = None,
                 node_edge_color: str = None,
@@ -1502,20 +1638,28 @@ class SankeyRaceMultiLayerParallel:
             audio_path = youtube_to_mp3(audio_url)
             print(f"  -> {audio_path}")
 
-        # Theme presets (overridable by explicit kwargs)
-        if theme == "dark":
-            _preset = dict(bg_color="#0a0a12", label_color="#EAEAF2",
-                           node_edge_color="#1a1a28", title_text_color="#FFFFFF",
-                           title_bg_color="#15151f")
-        else:  # light
-            _preset = dict(bg_color="white", label_color="#000000",
-                           node_edge_color="#333333", title_text_color="#000000",
-                           title_bg_color=title_bg_color)
-        bg_color = bg_color or _preset["bg_color"]
-        label_color = label_color or _preset["label_color"]
-        node_edge_color = node_edge_color or _preset["node_edge_color"]
-        title_text_color = title_text_color or _preset["title_text_color"]
-        title_bg_color = _preset["title_bg_color"] if theme == "dark" else title_bg_color
+        # Resolve the look into a single Theme (preset name or Theme object),
+        # with any explicit styling kwargs applied as overrides, then read the
+        # flat values back into locals so the rest of the method is unchanged.
+        _theme = Theme.resolve(
+            theme, bg_color=bg_color, label_color=label_color,
+            node_edge_color=node_edge_color, title_text_color=title_text_color,
+            title_bg_color=title_bg_color, title_bg_alpha=title_bg_alpha,
+            font_size=font_size, title_fontsize=title_fontsize,
+            node_width=node_width, link_alpha=link_alpha, link_glow=link_glow,
+            n_segments=n_segments)
+        bg_color = _theme.background
+        label_color = _theme.text
+        node_edge_color = _theme.node.edge_color
+        title_text_color = _theme.title_text
+        title_bg_color = _theme.title_bg
+        title_bg_alpha = _theme.title_bg_alpha
+        font_size = _theme.type.base
+        title_fontsize = _theme.type.title
+        node_width = _theme.node.width
+        link_alpha = _theme.link.alpha
+        link_glow = _theme.link.glow
+        n_segments = _theme.link.segments
 
         # Determine mode
         if stacked_mode and ranking_mode:
@@ -1633,6 +1777,10 @@ class SankeyRaceMultiLayerParallel:
             'title_text_color': title_text_color,
             'link_alpha': link_alpha,
             'link_glow': link_glow,
+            'node_corner_radius': _theme.node.corner_radius,
+            'node_pad': _theme.node.pad,
+            'node_edge_width': _theme.node.edge_width,
+            'label_plate_alpha': _theme.node.label_plate_alpha,
             'fixed_layer_max': fixed_layer_max,
             'overlay_series': overlay_series,
             'overlay_label': overlay_label,
@@ -1740,14 +1888,14 @@ class SankeyRaceMultiLayerParallel:
                    margin_top: float = 0.12,
                    margin_bottom: float = 0.05,
                    title_fontsize: int = 18,
-                   title_bg_color: str = "wheat",
+                   title_bg_color: str = None,
                    title_bg_alpha: float = 0.9,
                    ranking_mode: bool = True,
                    stacked_mode: bool = True,
                    stacked_gap: float = 0.1,
                    ascending: bool = False,
                    n_segments: int = DEFAULT_GRADIENT_SEGMENTS,
-                   theme: str = "light",
+                   theme: Union[str, "Theme"] = "light",
                    bg_color: str = None,
                    label_color: str = None,
                    node_edge_color: str = None,
@@ -1781,20 +1929,27 @@ class SankeyRaceMultiLayerParallel:
                 f"frame_index {frame_index} is out of range. Total frames: {len(self.frames)}"
             )
 
-        # Theme presets (overridable by explicit kwargs)
-        if theme == "dark":
-            preset = dict(bg_color="#0a0a12", label_color="#EAEAF2",
-                          node_edge_color="#1a1a28", title_text_color="#FFFFFF",
-                          title_bg_color="#15151f")
-        else:  # light
-            preset = dict(bg_color="white", label_color="#000000",
-                          node_edge_color="#333333", title_text_color="#000000",
-                          title_bg_color=title_bg_color)
-        bg_color = bg_color or preset["bg_color"]
-        label_color = label_color or preset["label_color"]
-        node_edge_color = node_edge_color or preset["node_edge_color"]
-        title_text_color = title_text_color or preset["title_text_color"]
-        title_bg_color = preset["title_bg_color"] if theme == "dark" else title_bg_color
+        # Resolve the look into a single Theme (preset name or Theme object),
+        # with any explicit styling kwargs applied as overrides.
+        _theme = Theme.resolve(
+            theme, bg_color=bg_color, label_color=label_color,
+            node_edge_color=node_edge_color, title_text_color=title_text_color,
+            title_bg_color=title_bg_color, title_bg_alpha=title_bg_alpha,
+            font_size=font_size, title_fontsize=title_fontsize,
+            node_width=node_width, link_alpha=link_alpha, link_glow=link_glow,
+            n_segments=n_segments)
+        bg_color = _theme.background
+        label_color = _theme.text
+        node_edge_color = _theme.node.edge_color
+        title_text_color = _theme.title_text
+        title_bg_color = _theme.title_bg
+        title_bg_alpha = _theme.title_bg_alpha
+        font_size = _theme.type.base
+        title_fontsize = _theme.type.title
+        node_width = _theme.node.width
+        link_alpha = _theme.link.alpha
+        link_glow = _theme.link.glow
+        n_segments = _theme.link.segments
 
         # Determine mode
         if stacked_mode and ranking_mode:
@@ -1852,6 +2007,9 @@ class SankeyRaceMultiLayerParallel:
             label_color=label_color, node_edge_color=node_edge_color,
             link_alpha=link_alpha, link_glow=link_glow,
             padding=padding, yaxis_node=yaxis_node, yaxis_suffix=yaxis_suffix,
+            node_corner_radius=_theme.node.corner_radius, node_pad=_theme.node.pad,
+            node_edge_width=_theme.node.edge_width,
+            label_plate_alpha=_theme.node.label_plate_alpha,
         )
 
         if title:

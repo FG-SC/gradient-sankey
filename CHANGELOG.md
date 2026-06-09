@@ -3,6 +3,49 @@
 All notable changes to **gradient-sankey** are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.0] — 2026-06-09 — A first-class `Theme` design system
+
+The library now treats *design* as a first-class concern alongside animation:
+how a chart looks is described by one cohesive, named object instead of a dozen
+scattered keyword arguments and duplicated presets.
+
+### Added
+- **`Theme` design system** — `Theme`, `NodeStyle`, `LinkStyle`, `TypeScale`
+  dataclasses. Pass `theme=Theme.dark()` (or `Theme.light()` / `Theme.editorial()`)
+  once to `animate()` / `save_frame()`, or build your own:
+  ```python
+  from gradient_sankey import Theme, NodeStyle, LinkStyle
+  look = Theme.dark()
+  look.node.corner_radius = 0.18      # pill-shaped nodes
+  look.link.glow = 3                  # heavier neon glow
+  look.node.label_plate_alpha = 0     # turn the label backing plate off
+  sk.animate("reel.mp4", theme=look)
+  ```
+- **Themeable node geometry & label plate** — node corner radius, padding, edge
+  width and the name-label backing plate are now controlled by the theme
+  (previously hard-coded in the renderer).
+- **`Theme.editorial()`** preset — a clean print look (warm paper, charcoal ink,
+  hairline borders, no glow, no label plate).
+
+### Changed
+- The `dark` / `light` theme presets are now defined in **one place**
+  (`Theme.dark()` / `Theme.light()`); the duplicated preset dicts in `animate()`
+  and `save_frame()` were removed.
+- `theme=` accepts a `Theme` object as well as a preset name. Every existing
+  styling keyword (`bg_color`, `label_color`, `link_glow`, `font_size`, …) still
+  works and now acts as an **override** on top of the resolved theme.
+- `title_bg_color` now defaults to `None` (resolves from the theme) instead of
+  `"wheat"`, so the dark preset's title background is no longer overridden.
+
+### Fixed
+- **Node name labels stayed unreadable over bright ribbons** — names now sit on a
+  contrast-derived backing plate (dark plate under light text and vice-versa),
+  legible on any background. Controlled by `Theme.node.label_plate_alpha`.
+
+> **Backward compatible & pixel-verified:** the existing dark/light output is
+> byte-for-byte identical (`max ‖new − old‖∞ = 0/255` on the NVIDIA frame); all
+> 32 unit tests pass.
+
 ## [1.1.3] — 2026-06-08 — Resilient parallel rendering under load
 
 ### Changed

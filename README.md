@@ -2,6 +2,7 @@
 
 A Python library for **animated, gradient Sankey diagrams** — the only one that renders **true color gradients** on the connections, with a full toolkit for storytelling videos: dark themes, dynamic colors, accounting‑style labels, a dynamic value axis, an optional time‑series overlay (bar‑chart‑race style), and **background music straight from a local MP3 or a YouTube URL**.
 
+[![PyPI](https://img.shields.io/pypi/v/gradient-sankey.svg)](https://pypi.org/project/gradient-sankey/)
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![FFmpeg](https://img.shields.io/badge/video-FFmpeg-red.svg)
@@ -29,6 +30,7 @@ Each link is drawn as **50 color segments** by default (configurable via `n_segm
 
 Everything below is **additive and backward‑compatible** — old code keeps working.
 
+- 🎨 **`Theme` design system** — one cohesive object for the whole look: `Theme.dark()`, `Theme.light()`, `Theme.editorial()`, or build your own (`node.corner_radius`, `link.glow`, `type.base`, …). See [Themes](#3-themes--the-design-system).
 - 🌑 **Dark theme + neon glow** — `theme="dark"`, `link_glow`, `link_alpha`, custom `bg_color`/`label_color`/`node_edge_color`/`title_text_color`.
 - 🎨 **Dynamic node colors** — including a new `"intensity"` mode (keeps each node's hue, brightens with value).
 - 🔀 **Automatic crossing reduction** — links are stacked by the other end's vertical position, so flows don't tangle.
@@ -45,14 +47,20 @@ Jump to [the feature guide](#feature-guide) or the [full NVIDIA example](#full-e
 ## Installation
 
 ```bash
-git clone https://github.com/FG-SC/gradient-sankey.git
-cd gradient-sankey
-
-# Core only (build + render animations):
-pip install -e .
+pip install gradient-sankey
 
 # With optional extras used by some examples:
-pip install -e ".[finance,audio]"   # finance = requests + yfinance, audio = yt-dlp
+pip install "gradient-sankey[finance,audio]"   # finance = requests + yfinance, audio = yt-dlp
+```
+
+> FFmpeg is a system dependency (not pip-installable) required for video/audio export.
+
+Or from source, for development:
+
+```bash
+git clone https://github.com/FG-SC/gradient-sankey.git
+cd gradient-sankey
+pip install -e ".[dev]"
 ```
 
 Or just the core dependencies without installing the package:
@@ -188,24 +196,48 @@ sankey.animate(stacked_mode=True, ranking_mode=False, absolute_scale=True)
 
 > Tip: absolute scale is dramatic but back‑loaded if the series explodes late. Per‑frame fill + the [dynamic Y‑axis](#7-dynamic-value-y-axis-on-a-node) or [labels](#6-negative-values--accounting-parentheses) is often more legible.
 
-### 3. Dark theme & neon glow
+### 3. Themes — the design system
+
+Animation is the core, but a chart also has to be **beautiful**. How it looks is
+controlled by one cohesive object, `Theme`, so you can dial in the design once
+and reuse it. Three presets ship out of the box:
 
 ```python
-sankey.animate(
-    theme="dark",        # preset: near‑black bg, light labels, dark node edges
-    link_alpha=0.5,      # link translucency (0–1)
-    link_glow=1,         # 0 = off; 1–3 = neon halo layers behind links
-)
+from gradient_sankey import Theme
+
+sankey.animate("reel.mp4", theme=Theme.dark())        # near‑black bg, light labels
+sankey.save_frame("frame.png", theme=Theme.light())   # classic white (default)
+sankey.save_frame("print.png", theme=Theme.editorial())  # warm paper, charcoal ink
 ```
 
-Override any preset color explicitly:
+A `Theme` bundles a palette‑independent look: background, text color, and three
+nested styles you can tweak field by field —
 
 ```python
-sankey.animate(theme="dark", bg_color="#0a0a12", label_color="#EAEAF2",
-               node_edge_color="#1a1a28", title_text_color="#FFFFFF")
+look = Theme.dark()
+look.node.corner_radius   = 0.18   # pill‑shaped nodes
+look.node.edge_color      = "#1a1a28"
+look.node.label_plate_alpha = 0.0  # turn off the label backing plate
+look.link.glow            = 3      # neon halo layers behind links (0 = off)
+look.link.alpha           = 0.75   # link translucency
+look.type.base            = 14     # typographic scale
+sankey.animate("reel.mp4", theme=look)
 ```
 
-`theme="light"` (default) keeps the classic white background.
+| Group | Fields |
+|---|---|
+| `Theme` | `background`, `text`, `title_text`, `title_bg`, `title_bg_alpha` |
+| `Theme.node` (`NodeStyle`) | `width`, `corner_radius`, `pad`, `edge_color`, `edge_width`, `label_plate_alpha` |
+| `Theme.link` (`LinkStyle`) | `alpha`, `glow`, `segments` |
+| `Theme.type` (`TypeScale`) | `base`, `title` |
+
+**Backward compatible:** `theme="dark"`/`"light"` strings still work, and every
+old styling keyword (`bg_color`, `label_color`, `node_edge_color`, `link_glow`,
+`font_size`, …) still works as an **override** on top of the chosen theme:
+
+```python
+sankey.animate(theme="dark", link_glow=1, bg_color="#0a0a12")  # still valid
+```
 
 ### 4. Dynamic node colors — `dynamic_color_mode`
 
