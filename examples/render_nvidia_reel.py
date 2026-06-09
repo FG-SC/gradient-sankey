@@ -91,6 +91,7 @@ def main(args):
         title="NVIDIA  income statement  ($B / quarter)",
         figsize=(16, 9), fps=30, duration_seconds=args.duration, quality="high",  # landscape, ~45s
         font_size=12, title_fontsize=20, padding=2.4,
+        margin_top=0.17,                              # drop the top node labels clear of the 2-line title
         margin_bottom=0.20,                           # reserve bottom band for the stock overlay
         theme="dark", link_glow=1, link_alpha=0.5,   # softer
         ranking_mode=False, stacked_mode=True,        # fixed waterfall order
