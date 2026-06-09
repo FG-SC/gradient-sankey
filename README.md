@@ -7,6 +7,15 @@ A Python library for **animated, gradient Sankey diagrams** — the only one tha
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![FFmpeg](https://img.shields.io/badge/video-FFmpeg-red.svg)
 
+```bash
+pip install gradient-sankey
+```
+
+> **Design philosophy.** One class, one `from_dataframe` entry point, sane defaults,
+> and a single `Theme` object instead of a wall of keyword arguments — because
+> *simple is better than complex*, *flat is better than nested*, and *there should be
+> one — and preferably only one — obvious way to do it.* (`import this`)
+
 ---
 
 ## The Gradient Difference
@@ -28,7 +37,7 @@ Each link is drawn as **50 color segments** by default (configurable via `n_segm
 
 ## Gallery
 
-*Every image below is rendered by the library — reproduce them all with the runnable [gallery notebook](notebooks/gradient_sankey_gallery.ipynb).*
+*Every image below is rendered by the library — reproduce them all with the runnable [gallery notebook](https://github.com/FG-SC/gradient-sankey/blob/main/notebooks/gradient_sankey_gallery.ipynb).*
 
 **Animate change over time** — a decade of the energy transition, rendered to MP4 (shown here as a GIF):
 
@@ -58,7 +67,7 @@ Each link is drawn as **50 color segments** by default (configurable via `n_segm
 
 Everything below is **additive and backward‑compatible** — old code keeps working.
 
-- 🎨 **`Theme` design system** — one cohesive object for the whole look: `Theme.dark()`, `Theme.light()`, `Theme.editorial()`, or build your own (`node.corner_radius`, `link.glow`, `type.base`, …). See [Themes](#3-themes--the-design-system).
+- 🎨 **`Theme` design system** — one cohesive object for the whole look: `Theme.dark()`, `Theme.light()`, `Theme.editorial()`, or build your own (`node.corner_radius`, `link.glow`, `type.base`, …). See [Themes](https://github.com/FG-SC/gradient-sankey#3-themes--the-design-system).
 - 🌑 **Dark theme + neon glow** — `theme="dark"`, `link_glow`, `link_alpha`, custom `bg_color`/`label_color`/`node_edge_color`/`title_text_color`.
 - 🎨 **Dynamic node colors** — including a new `"intensity"` mode (keeps each node's hue, brightens with value).
 - 🔀 **Automatic crossing reduction** — links are stacked by the other end's vertical position, so flows don't tangle.
@@ -68,7 +77,7 @@ Everything below is **additive and backward‑compatible** — old code keeps wo
 - 📈 **Optional time‑series overlay (bar‑chart‑race style)** — `overlay_series=...` adds a growing mini‑chart + a discreet "big number" in the footer (e.g. a stock price). **Optional** — the flow can stay the main focus.
 - 🎵 **Background music** — `audio_path="song.mp3"` **or** `audio_url="https://youtu.be/..."` (downloads via yt‑dlp, timestamps ignored), with `audio_start` and `audio_fade`.
 
-Jump to [the feature guide](#feature-guide) or the [full NVIDIA example](#full-example-nvidia-income-statement-reel).
+Jump to [the feature guide](https://github.com/FG-SC/gradient-sankey#feature-guide) or the [full NVIDIA example](https://github.com/FG-SC/gradient-sankey#full-example-nvidia-income-statement-reel).
 
 ---
 
@@ -123,7 +132,7 @@ import gradient_sankey as gs; print(gs.__version__)
 ```
 
 (Or pick the matching interpreter via the kernel selector.) Then explore the
-runnable [gallery notebook](notebooks/gradient_sankey_gallery.ipynb).
+runnable [gallery notebook](https://github.com/FG-SC/gradient-sankey/blob/main/notebooks/gradient_sankey_gallery.ipynb).
 
 ---
 
@@ -186,7 +195,20 @@ Key params: `output_path`, `frame_index`, `title`, `figsize`, `dpi`, `ranking_mo
 
 ### `animate(...)` — video (parallel render → FFmpeg)
 
-The big one. Parameters grouped by purpose:
+The big one — but most renders only touch a handful of knobs. The defaults are chosen to *just work*, so start here:
+
+| Param | Type | Default | What it does |
+|---|---|---|---|
+| `output_path` | str | `"sankey_parallel.mp4"` | Where to write the MP4. |
+| `duration_seconds` | float | `10.0` | Video length; with `fps` it sets the frame count. |
+| `fps` | int | `30` | Frames per second. |
+| `theme` | str \| `Theme` | `"light"` | The whole look — `Theme.dark()`, `"dark"`, or a custom `Theme`. |
+| `ranking_mode` / `stacked_mode` | bool | `True` / `True` | Positioning (see the matrix below). |
+| `absolute_scale` | bool | `False` | Per‑frame fill (False) vs. true global magnitude (True). |
+| `quality` | str | `"medium"` | `"low"` / `"medium"` / `"high"` → dpi 72 / 120 / 200. |
+| `n_workers` | int | CPU count | Parallel render processes; lower it on a busy machine. |
+
+That's enough for a great reel. The full surface, grouped by purpose:
 
 **Output & timing** — `output_path`, `title`, `figsize`, `fps`, `duration_seconds`, `quality` (`"low"`/`"medium"`/`"high"`), `n_workers`.
 
@@ -225,7 +247,7 @@ Each is explained with examples in the guide below.
 sankey.animate(ranking_mode=False, stacked_mode=True)  # e.g. an income statement (fixed order)
 ```
 
-![Stacked + Ranking](assets/gifs/mode_stacked_ranking.gif)
+![Stacked + Ranking](https://raw.githubusercontent.com/FG-SC/gradient-sankey/main/assets/gifs/mode_stacked_ranking.gif)
 
 ### 2. Absolute vs per‑frame scale — `absolute_scale`
 
@@ -237,7 +259,7 @@ Set `absolute_scale=True` to use a **single global scale** so bars grow in **tru
 sankey.animate(stacked_mode=True, ranking_mode=False, absolute_scale=True)
 ```
 
-> Tip: absolute scale is dramatic but back‑loaded if the series explodes late. Per‑frame fill + the [dynamic Y‑axis](#7-dynamic-value-y-axis-on-a-node) or [labels](#6-negative-values--accounting-parentheses) is often more legible.
+> Tip: absolute scale is dramatic but back‑loaded if the series explodes late. Per‑frame fill + the [dynamic Y‑axis](https://github.com/FG-SC/gradient-sankey#7-dynamic-value-y-axis-on-a-node) or [labels](https://github.com/FG-SC/gradient-sankey#6-negative-values--accounting-parentheses) is often more legible.
 
 ### 3. Themes — the design system
 
@@ -308,7 +330,8 @@ For a clean, uniform look, give the i‑th node of **every** layer the same colo
 
 ```python
 POS = ["#33E08A", "#FF2E97"]   # position 0 (kept) = green, position 1 (leak) = magenta
-node_colors = {n: POS[i] for layer in layers for i, n in enumerate(layer)}
+# `% len(POS)` cycles the palette, so this stays safe for layers of any width.
+node_colors = {n: POS[i % len(POS)] for layer in layers for i, n in enumerate(layer)}
 ```
 
 ### 6. Negative values & accounting parentheses
@@ -397,9 +420,9 @@ path = youtube_to_mp3("https://youtu.be/WITxo7OfMVM", out_dir="music")
 
 ---
 
-## Full example: NVIDIA income‑statement reel
+## Full example: NVIDIA income-statement reel
 
-[`examples/render_nvidia_reel.py`](examples/render_nvidia_reel.py) combines almost every feature: real SEC EDGAR data, a fixed‑order P&L waterfall, dynamic `$` Y‑axis, accounting parentheses for loss quarters, a bar‑chart‑race stock overlay, dark/neon theme, and background music.
+[`examples/render_nvidia_reel.py`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/render_nvidia_reel.py) combines almost every feature: real SEC EDGAR data, a fixed‑order P&L waterfall, dynamic `$` Y‑axis, accounting parentheses for loss quarters, a bar‑chart‑race stock overlay, dark/neon theme, and background music.
 
 ```bash
 # Local MP3, full 90s reel from 2009:
@@ -419,7 +442,7 @@ python examples/render_nvidia_reel.py --start-year 2015 --duration 45 \
 | `--audio-url` | — | YouTube URL (needs yt‑dlp) |
 | `--audio-start` | 0 | Seconds into the track to begin |
 
-[`examples/nvidia_dre.py`](examples/nvidia_dre.py) is the data layer: it scrapes 4 clean series from the **SEC EDGAR** XBRL API (Revenue, Gross Profit, Operating Income, Net Income) and derives the "leak" flows as residuals (`COGS = Revenue − Gross`, etc.) so the Sankey always balances.
+[`examples/nvidia_dre.py`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/nvidia_dre.py) is the data layer: it scrapes 4 clean series from the **SEC EDGAR** XBRL API (Revenue, Gross Profit, Operating Income, Net Income) and derives the "leak" flows as residuals (`COGS = Revenue − Gross`, etc.) so the Sankey always balances.
 
 ---
 
@@ -489,7 +512,7 @@ gradient-sankey/
 
 ## Troubleshooting
 
-- **FFmpeg not found** — install it (see [Installation](#installation)); required for any video/audio.
+- **FFmpeg not found** — install it (see [Installation](https://github.com/FG-SC/gradient-sankey#installation)); required for any video/audio.
 - **YouTube audio fails** — `pip install yt-dlp`; ensure FFmpeg is on PATH. If a video won't download, installing `deno` resolves yt‑dlp's JS‑runtime warning.
 - **Nodes in wrong positions** — node names must be unique across layers.
 - **Negative values look odd** — bars are sized by magnitude; use `node_value_labels(_per_frame)` to show `(parentheses)`.
@@ -501,4 +524,4 @@ gradient-sankey/
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/FG-SC/gradient-sankey/blob/main/LICENSE).

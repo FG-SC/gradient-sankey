@@ -3,6 +3,26 @@
 All notable changes to **gradient-sankey** are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.2] — 2026-06-09 — Documentation that renders on PyPI
+
+Documentation-only release (no API or behavior change).
+
+### Fixed
+- **Broken links on the PyPI project page** — relative links to examples, the
+  notebook, the `LICENSE`, in-page anchors and a GIF resolved to 404s on PyPI
+  (which doesn't host the repo). All are now absolute GitHub/raw URLs that work
+  from both GitHub and PyPI.
+- **Fragile "color by position" snippet** — used `POS[i]`, which raised
+  `IndexError` for layers wider than the palette. Now `POS[i % len(POS)]`, safe
+  for layers of any width. (Every README snippet is now run as part of release
+  verification.)
+
+### Changed
+- **Clearer parameter docs** — `animate()` now leads with a "most-used parameters"
+  table (type, default, purpose) before the full grouped reference.
+- A short **design-philosophy** note (Zen of Python) up top, tied to concrete API
+  decisions (one class, `from_dataframe`, sane defaults, a single `Theme`).
+
 ## [1.2.1] — 2026-06-09 — Gallery & Jupyter docs
 
 Documentation-only release (no API or behavior changes) so the PyPI project page
