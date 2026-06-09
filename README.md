@@ -13,7 +13,7 @@ A Python library for **animated, gradient Sankey diagrams** — the only one tha
 
 **No mainstream visualization library supports gradient colors on Sankey links.** This one renders **true color gradients** that flow from the source node's color to the target node's color.
 
-![Gradient Connections](assets/images/gradient_example.png)
+![Gradient Connections](https://raw.githubusercontent.com/FG-SC/gradient-sankey/main/assets/images/gradient_example.png)
 
 | Library | Sankey | Gradient links | Animation | Background music |
 |---|---|---|---|---|
@@ -23,6 +23,34 @@ A Python library for **animated, gradient Sankey diagrams** — the only one tha
 | **This library** | ✅ | ✅ **true gradients** | ✅ | ✅ |
 
 Each link is drawn as **50 color segments** by default (configurable via `n_segments`) following a **cubic‑Bézier** curve.
+
+---
+
+## Gallery
+
+*Every image below is rendered by the library — reproduce them all with the runnable [gallery notebook](notebooks/gradient_sankey_gallery.ipynb).*
+
+**Animate change over time** — a decade of the energy transition, rendered to MP4 (shown here as a GIF):
+
+![Energy transition animation](https://raw.githubusercontent.com/FG-SC/gradient-sankey/main/assets/gifs/gallery_energy_transition.gif)
+
+**Any flow, beautifully** — money, energy, users… width is volume and the color flows from source to target, so even a dense many‑to‑many diagram stays readable:
+
+![Energy system](https://raw.githubusercontent.com/FG-SC/gradient-sankey/main/assets/images/gallery/02_energy.png)
+
+![Multi‑layer funnel](https://raw.githubusercontent.com/FG-SC/gradient-sankey/main/assets/images/gallery/03_funnel.png)
+
+**One look, three themes** — the *same* data through the `Theme` design system: `dark` · `light` · `editorial`.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/FG-SC/gradient-sankey/main/assets/images/gallery/04_theme_dark.png" width="32%" />
+  <img src="https://raw.githubusercontent.com/FG-SC/gradient-sankey/main/assets/images/gallery/04_theme_light.png" width="32%" />
+  <img src="https://raw.githubusercontent.com/FG-SC/gradient-sankey/main/assets/images/gallery/04_theme_editorial.png" width="32%" />
+</p>
+
+**Make it yours** — a custom `Theme` (pill‑shaped nodes, a heavier neon glow, a sunset palette):
+
+![Custom theme](https://raw.githubusercontent.com/FG-SC/gradient-sankey/main/assets/images/gallery/05_custom.png)
 
 ---
 
@@ -81,6 +109,21 @@ pip install -r requirements.txt
 
 - `yfinance` — stock/financial series for the time‑series overlay.
 - `yt-dlp` — background music from a YouTube URL (`pip install yt-dlp`; also needs FFmpeg).
+
+### Using it in Jupyter / VS Code
+
+A `ModuleNotFoundError` in a notebook *after* a successful terminal install almost
+always means the notebook's **kernel** points to a different Python than the one
+your terminal `pip` used. Install into the **running kernel** instead — the `%pip`
+magic does exactly that:
+
+```python
+%pip install gradient-sankey
+import gradient_sankey as gs; print(gs.__version__)
+```
+
+(Or pick the matching interpreter via the kernel selector.) Then explore the
+runnable [gallery notebook](notebooks/gradient_sankey_gallery.ipynb).
 
 ---
 
