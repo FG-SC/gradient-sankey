@@ -40,8 +40,8 @@ except ImportError:                     # pragma: no cover - very old setups
 H = {'User-Agent': os.environ.get('SEC_USER_AGENT', 'gradient-sankey example (contact: you@example.com)')}
 CIK = '0001045810'  # NVIDIA
 HERE = os.path.dirname(os.path.abspath(__file__))
-WIDE_CSV = os.path.join(HERE, "nvidia_dre_wide.csv")
-FLOWS_CSV = os.path.join(HERE, "nvidia_dre.csv")
+WIDE_CSV = os.path.join(os.path.dirname(HERE), "data", "nvidia_dre_wide.csv")
+FLOWS_CSV = os.path.join(os.path.dirname(HERE), "data", "nvidia_dre.csv")
 
 # Revenue tag changed over time; the later (current-standard) tag wins per period.
 REVENUE_TAGS = ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax']

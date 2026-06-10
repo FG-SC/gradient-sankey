@@ -103,10 +103,7 @@ examples/**/*.avi
 examples/**/*.mov
 examples/**/*.mkv
 examples/**/*.png
-examples/gallery_out/
-# keep the demo render that ships with the repo (comment MUST be on its own line:
-# an inline comment on a negation line becomes part of the pattern and breaks it)
-!examples/us_energy_flow.mp4
+examples/**/gallery_out/
 # Downloaded soundtracks (often copyrighted) - never commit
 examples/music/
 

@@ -2,16 +2,15 @@
 NVIDIA income-statement (DRE) reel: dark/neon, 9:16 vertical, ~20s.
 Real SEC EDGAR data 2008->2026. Bars grow in ABSOLUTE value (global scale),
 fixed waterfall order (no ranking), accounting-style (parentheses) labels.
-Output: examples/nvidia_dre.mp4
+Output: nvidia_dre.mp4 (in this folder)
 """
 import sys, os
 import argparse
 import multiprocessing as mp
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from gradient_sankey import SankeyRaceMultiLayerParallel
-from nvidia_dre import build, to_flows
+from nvidia_sec_edgar import build, to_flows
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 

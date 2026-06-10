@@ -422,15 +422,17 @@ path = youtube_to_mp3("https://youtu.be/WITxo7OfMVM", out_dir="music")
 
 ## Full example: NVIDIA income-statement reel
 
-[`examples/render_nvidia_reel.py`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/render_nvidia_reel.py) combines almost every feature: real SEC EDGAR data, a fixed‑order P&L waterfall, dynamic `$` Y‑axis, accounting parentheses for loss quarters, a bar‑chart‑race stock overlay, dark/neon theme, and background music.
+[`examples/advanced/nvidia_reel.py`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/advanced/nvidia_reel.py) combines almost every feature: real SEC EDGAR data, a fixed‑order P&L waterfall, dynamic `$` Y‑axis, accounting parentheses for loss quarters, a bar‑chart‑race stock overlay, dark/neon theme, and background music.
+
+> New to the library? The [`examples/`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/) folder is a **step‑by‑step tutorial path** — start at [`01_hello_sankey.py`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/01_hello_sankey.py) and work down. This reel is the graduation project.
 
 ```bash
 # Local MP3, full 90s reel from 2009:
-python examples/render_nvidia_reel.py --start-year 2009 --duration 90 \
+python examples/advanced/nvidia_reel.py --start-year 2009 --duration 90 \
     --audio "examples/music/song.mp3" --audio-start 269
 
 # Or pull the music from YouTube (timestamp ignored):
-python examples/render_nvidia_reel.py --start-year 2015 --duration 45 \
+python examples/advanced/nvidia_reel.py --start-year 2015 --duration 45 \
     --audio-url "https://www.youtube.com/watch?v=WITxo7OfMVM" --audio-start 269
 ```
 
@@ -442,7 +444,7 @@ python examples/render_nvidia_reel.py --start-year 2015 --duration 45 \
 | `--audio-url` | — | YouTube URL (needs yt‑dlp) |
 | `--audio-start` | 0 | Seconds into the track to begin |
 
-[`examples/nvidia_dre.py`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/nvidia_dre.py) is the data layer: it scrapes 4 clean series from the **SEC EDGAR** XBRL API (Revenue, Gross Profit, Operating Income, Net Income) and derives the "leak" flows as residuals (`COGS = Revenue − Gross`, etc.) so the Sankey always balances.
+[`examples/advanced/nvidia_sec_edgar.py`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/advanced/nvidia_sec_edgar.py) is the data layer: it scrapes 4 clean series from the **SEC EDGAR** XBRL API (Revenue, Gross Profit, Operating Income, Net Income) and derives the "leak" flows as residuals (`COGS = Revenue − Gross`, etc.) so the Sankey always balances.
 
 ---
 
@@ -495,14 +497,17 @@ gradient-sankey/
 ├── gradient_sankey.py        # the library (all features, single module)
 ├── pyproject.toml            # packaging (core deps + [finance]/[audio] extras)
 ├── requirements.txt          # core deps only
-├── examples/
-│   ├── gallery.py            # feature cookbook (inputs, palettes, modes, dynamic colors)
-│   ├── nvidia_dre.py         # SEC EDGAR scraper -> P&L flows (cached to nvidia_dre_wide.csv)
-│   ├── nvidia_dre.csv        # committed flows (reproducible/offline fallback)
-│   ├── render_nvidia_reel.py # full reel (CLI: --start-year/--duration/--audio[-url]/--refresh)
-│   ├── render_nvidia_poc.py  # single static frame
-│   ├── us_energy_flow.py     # conservative-flow example (+ shipped demo .mp4)
-│   └── company_financials.py # non-conservative (P&L) example
+├── examples/                 # a step-by-step tutorial path (start at the README)
+│   ├── README.md             # the guided tour
+│   ├── 01_hello_sankey.py    # PNG in 5 lines  →  02 animation  →  03 themes  →
+│   ├── 0{2..6}_*.py          #   04 colours  →  05 real company data  →  06 music
+│   ├── data/                 # cached SEC CSVs (reproducible/offline)
+│   └── advanced/             # the complete builds (see advanced/README.md)
+│       ├── nvidia_reel.py        # the flagship reel (CLI)
+│       ├── nvidia_sec_edgar.py   # SEC EDGAR scraper -> balanced P&L flows
+│       ├── gallery.py            # cookbook: a frame for every feature
+│       ├── company_financials.py # P&L with accounting parentheses
+│       └── energy_flow.py        # 3-layer energy system
 ├── tests/                    # pytest suite (run `pytest`; render tests need ffmpeg)
 ├── assets/                   # gifs / images for docs
 ├── README.md  ·  CHANGELOG.md  ·  LICENSE
