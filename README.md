@@ -513,8 +513,7 @@ gradient-sankey/
 ├── notebooks/                # "learn by building" — 12 complete ETL tutorials
 │   ├── README.md             # the welcoming index + learning path
 │   ├── 01..12_tutorial_*.ipynb   # full projects (NVIDIA, Alphabet, Olympics, …)
-│   ├── gradient_sankey_{gallery,journey}.ipynb  # start-here overviews
-│   └── builders/             # the scripts that generate each notebook
+│   └── gradient_sankey_{gallery,journey}.ipynb  # start-here overviews
 ├── tests/                    # pytest suite (run `pytest`; render tests need ffmpeg)
 ├── assets/                   # gifs / images for docs
 ├── README.md  ·  CHANGELOG.md  ·  LICENSE
