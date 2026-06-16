@@ -111,3 +111,21 @@ examples/music/
 *.tmp
 *.temp
 *.log
+
+# Tutorial notebook render artifacts (the .ipynb embed their own outputs)
+notebooks/gallery_assets/
+notebooks/.nbcache/
+notebooks/_nb_assets/
+
+# Daily-posts generated/heavy artifacts (keep the .py pipeline, drop the big binaries)
+daily_posts/cache/
+daily_posts/output/
+daily_posts/music/
+# Stray render artifacts that land in daily_posts/files/ (keep only the .py/.yml)
+daily_posts/**/*.png
+daily_posts/**/*.mp4
+daily_posts/**/*.jpg
+daily_posts/**/*.gif
+
+# Daily content pipeline — stays LOCAL, never committed
+daily_posts/

@@ -424,7 +424,9 @@ path = youtube_to_mp3("https://youtu.be/WITxo7OfMVM", out_dir="music")
 
 [`examples/advanced/nvidia_reel.py`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/advanced/nvidia_reel.py) combines almost every feature: real SEC EDGAR data, a fixed‑order P&L waterfall, dynamic `$` Y‑axis, accounting parentheses for loss quarters, a bar‑chart‑race stock overlay, dark/neon theme, and background music.
 
-> New to the library? The [`examples/`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/) folder is a **step‑by‑step tutorial path** — start at [`01_hello_sankey.py`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/01_hello_sankey.py) and work down. This reel is the graduation project.
+> **New here? Two ways to learn:**
+> - 🐍 [`examples/`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/) — *learn the API* in six short Python scripts. Start at [`01_hello_sankey.py`](https://github.com/FG-SC/gradient-sankey/blob/main/examples/01_hello_sankey.py) and work down.
+> - 📒 [`notebooks/`](https://github.com/FG-SC/gradient-sankey/blob/main/notebooks/) — *learn by building real data projects*: 12 complete ETL tutorials (NVIDIA, Alphabet, the Olympics, energy, refugees…), each going from a public source to a finished animation. Rendered right on GitHub.
 
 ```bash
 # Local MP3, full 90s reel from 2009:
@@ -497,7 +499,7 @@ gradient-sankey/
 ├── gradient_sankey.py        # the library (all features, single module)
 ├── pyproject.toml            # packaging (core deps + [finance]/[audio] extras)
 ├── requirements.txt          # core deps only
-├── examples/                 # a step-by-step tutorial path (start at the README)
+├── examples/                 # "learn the API" — a step-by-step Python tutorial path
 │   ├── README.md             # the guided tour
 │   ├── 01_hello_sankey.py    # PNG in 5 lines  →  02 animation  →  03 themes  →
 │   ├── 0{2..6}_*.py          #   04 colours  →  05 real company data  →  06 music
@@ -508,6 +510,11 @@ gradient-sankey/
 │       ├── gallery.py            # cookbook: a frame for every feature
 │       ├── company_financials.py # P&L with accounting parentheses
 │       └── energy_flow.py        # 3-layer energy system
+├── notebooks/                # "learn by building" — 12 complete ETL tutorials
+│   ├── README.md             # the welcoming index + learning path
+│   ├── 01..12_tutorial_*.ipynb   # full projects (NVIDIA, Alphabet, Olympics, …)
+│   ├── gradient_sankey_{gallery,journey}.ipynb  # start-here overviews
+│   └── builders/             # the scripts that generate each notebook
 ├── tests/                    # pytest suite (run `pytest`; render tests need ffmpeg)
 ├── assets/                   # gifs / images for docs
 ├── README.md  ·  CHANGELOG.md  ·  LICENSE

@@ -36,6 +36,15 @@ tutorials lead up to — including the flagship **NVIDIA income-statement reel**
 full **cookbook** of every feature. They're the "graduation projects"; the
 tutorials above teach everything you need to read them comfortably.
 
+## Prefer to learn by building real data projects?
+
+This folder teaches the **API**. Its sibling — [`../notebooks/`](../notebooks/) —
+teaches by **building**: 12 complete ETL tutorials that go from a raw public data
+source (SEC EDGAR, Our World in Data, the Olympics, UNHCR…) all the way to a
+finished animation, narrating every step. Each one is executed and committed with
+its outputs, so you can read the whole story right on GitHub. Two tracks, same
+destination — pick whichever fits how you like to learn.
+
 ## A 30-second mental model
 
 Three ideas and you understand the whole library:

@@ -211,6 +211,14 @@ def get_ranking_color(rank: int, total: int, colormap: Union[ColorPalette, str, 
     return plt.matplotlib.colors.rgb2hex(cmap(normalized)[:3])
 
 
+def _is_aggregate_node(name) -> bool:
+    """A bucket / hub / total node (Others, Demais…, Gasto…, União, Total) — kept at a
+    fixed neutral colour AND pinned to the bottom of its layer even under dynamic
+    colour/ranking, since it represents an aggregate or a hub, not a ranked competitor."""
+    n = str(name).strip()
+    return n.startswith(("Others", "Outros", "Demais", "Gasto", "Uniao", "União", "Total"))
+
+
 def interpolate_color(color1: str, color2: str, t: float) -> str:
     """Interpolate between two hex colors."""
     c1 = to_rgb(color1)
@@ -262,6 +270,10 @@ def youtube_to_mp3(url: str, out_dir: str = None, filename: str = None) -> str:
         'outtmpl': out_tmpl,
         'quiet': True,
         'no_warnings': True,
+        # Restrict the (title-derived) filename to ASCII: a video titled with an
+        # emoji (e.g. a 🎵) would otherwise yield a non-ASCII path that crashes a
+        # later print() on a legacy Windows console (cp1252) and can trip ffmpeg.
+        'restrictfilenames': True,
         'postprocessors': [{'key': 'FFmpegExtractAudio',
                             'preferredcodec': 'mp3', 'preferredquality': '0'}],
     }
@@ -522,6 +534,9 @@ def _draw_frame(ax, frame_data, cfg):
         for node in layer_nodes:
             val = frame_data.node_values.get(node, 0)
             if stacked_mode:
+                if val <= 1e-9:
+                    continue   # hide zero-value nodes (e.g. an issuer outside the
+                               # current top-N, or a chain with no supply yet)
                 h = max(val * scale, 0.1)
             else:
                 h = fixed_node_height
@@ -596,6 +611,8 @@ def _draw_frame(ax, frame_data, cfg):
             node_in_pos[t] += v * node_in_scale.get(t, 1)
 
     for src, tgt, val in sorted(valid_links, key=lambda x: (x[0], x[1])):
+        if src not in node_positions_rect or tgt not in node_positions_rect:
+            continue   # an endpoint was hidden (zero-value node) -> no ribbon to draw
         link_height_src = val * node_out_scale.get(src, 1)
         link_height_tgt = val * node_in_scale.get(tgt, 1)
 
@@ -613,12 +630,19 @@ def _draw_frame(ax, frame_data, cfg):
         rgb_end = _node_rgb(tgt)
 
         seg_x0 = x0 + (x1 - x0) * t0
-        seg_x1 = x0 + (x1 - x0) * t1
         # Bézier via precomputed ease factors (same result as _bezier_vec)
         seg_y0_top = y0_top + (y1_top - y0_top) * f0
         seg_y0_bot = y0_bot + (y1_bot - y0_bot) * f0
-        seg_y1_top = y0_top + (y1_top - y0_top) * f1
-        seg_y1_bot = y0_bot + (y1_bot - y0_bot) * f1
+        # Each quad's RIGHT edge reaches the *next* quad's boundary (t/f shifted by
+        # one), so consecutive quads overlap instead of merely touching. Touching
+        # quads leave a 1px antialiasing seam (faint vertical lines across the
+        # gradient); the overlap is painted over by the next quad, so the visible
+        # gradient is identical but seamless. The last quad keeps its own edge.
+        t1_ov = np.concatenate([t1[1:], t1[-1:]])
+        f1_ov = np.concatenate([f1[1:], f1[-1:]])
+        seg_x1 = x0 + (x1 - x0) * t1_ov
+        seg_y1_top = y0_top + (y1_top - y0_top) * f1_ov
+        seg_y1_bot = y0_bot + (y1_bot - y0_bot) * f1_ov
 
         colors = rgb_start + np.outer(t_mid, rgb_end - rgb_start)
 
@@ -649,10 +673,30 @@ def _draw_frame(ax, frame_data, cfg):
                                                  edgecolors=glow_colors, linewidths=2.5 * g))
         ax.add_collection(PolyCollection(all_vertices, facecolors=all_colors, edgecolors='none'))
 
-    # Nodes + labels
+    # Nodes + labels.  Name labels are COLLECTED here and drawn AFTER a per-layer
+    # vertical de-collision pass, so they never stack on top of each other when
+    # nodes are small and bunched.
     min_height_for_inside_text = 0.5
+    _plate_alpha = cfg.get('label_plate_alpha', 0.7)
+    if _plate_alpha > 0:
+        _plate = get_text_color_for_background(label_color)
+        name_bbox = dict(boxstyle='round,pad=0.2', facecolor=_plate,
+                         alpha=_plate_alpha, edgecolor='none')
+    else:
+        name_bbox = None
+    _l0_side = cfg.get('layer0_label_side', 'left')
+    # Below this height a MIDDLE-layer node's name is dropped (it would only collide
+    # with its neighbours and is too thin to read); first/last layers keep all names.
+    _min_label_h = 0.18
+
+    label_reqs = {}                          # layer_idx -> [name-label request dicts]
     for layer_idx, layer_nodes in enumerate(layers):
-        for node in layer_nodes:
+        reqs = []
+        # Draw bars SMALLEST-first so the biggest is on top: when two nations swap
+        # ranks, their stacked blocks slide through each other for a moment, and
+        # this makes the rising (now-bigger) nation pass cleanly OVER the falling
+        # one instead of an arbitrary, muddy overlap.
+        for node in sorted(layer_nodes, key=lambda n: frame_data.node_values.get(n, 0)):
             if node not in node_positions_rect:
                 continue
 
@@ -675,74 +719,102 @@ def _draw_frame(ax, frame_data, cfg):
             if frame_data.node_value_labels and node in frame_data.node_value_labels:
                 val_text = frame_data.node_value_labels[node]
             else:
-                val_text = f"{val:.0f}"
+                # integers for >=1, one decimal for sub-unit values so a tiny
+                # early market doesn't collapse every label to "0".
+                val_text = f"{val:.0f}" if abs(val) >= 1 else f"{val:.1f}"
 
             fits = h >= min_height_for_inside_text
             # If the bar is too small, append the value to the NAME (outside the
             # bar) so negatives like "(5)" are never hidden.
             name_txt = f"{node}" if fits else f"{node}  {val_text}"
-
-            # Translucent backing plate so a name stays legible even when it sits
-            # over bright ribbons or a node edge (e.g. short middle-layer nodes).
-            # Plate must CONTRAST with the label text (which is light on dark
-            # themes, dark on light): derive it from label_color so it works in
-            # every theme and code path (bg_color isn't always in cfg).
-            _plate_alpha = cfg.get('label_plate_alpha', 0.7)
-            if _plate_alpha > 0:
-                _plate = get_text_color_for_background(label_color)
-                name_bbox = dict(boxstyle='round,pad=0.2', facecolor=_plate,
-                                 alpha=_plate_alpha, edgecolor='none')
-            else:
-                name_bbox = None
-
-            if node == yaxis_node:
-                # Node with the value axis: name goes on top to free the left side
-                ax.text(x + node_width / 2, y + h + 0.18, name_txt,
-                        ha='center', va='bottom', fontsize=font_size, fontweight='bold',
-                        color=label_color, bbox=name_bbox)
-            elif layer_idx == 0:
-                ax.text(x - 0.18, y + h / 2, name_txt,
-                        ha='right', va='center', fontsize=font_size, fontweight='bold',
-                        color=label_color, bbox=name_bbox)
-            elif layer_idx == n_layers - 1:
-                ax.text(x + node_width + 0.18, y + h / 2, name_txt,
-                        ha='left', va='center', fontsize=font_size, fontweight='bold',
-                        color=label_color, bbox=name_bbox)
-            else:
-                ax.text(x + node_width / 2, y + h + 0.18, name_txt,
-                        ha='center', va='bottom', fontsize=font_size - 1, fontweight='bold',
-                        color=label_color, bbox=name_bbox)
-
             if fits:
                 ax.text(x + node_width / 2, y + h / 2, val_text,
                         ha='center', va='center', fontsize=font_size - 1,
                         color=text_color, fontweight='bold')
 
-    # Dynamic value Y-axis on a chosen node (discreet ruler with "nice" ticks)
-    if yaxis_node and yaxis_node in node_positions_rect and frame_data.node_values.get(yaxis_node, 0) > 0:
-        yx, yyb, yh = node_positions_rect[yaxis_node]
-        yval = frame_data.node_values[yaxis_node]
-        ysuf = cfg.get('yaxis_suffix', '')
-        raw = yval / 4.0
-        mag = 10 ** np.floor(np.log10(raw)) if raw > 0 else 1.0
-        step = next((m * mag for m in (1, 2, 2.5, 5, 10) if raw <= m * mag), 10 * mag)
-        axis_x = yx - 0.14
-        ax.plot([axis_x, axis_x], [yyb, yyb + yh],
-                color=label_color, lw=1.0, alpha=0.40, zorder=3)
-        tv = 0.0
-        while tv <= yval + 1e-9:
-            ty = yyb + yh * (tv / yval)
-            ax.plot([axis_x - 0.07, axis_x], [ty, ty],
-                    color=label_color, lw=1.0, alpha=0.40, zorder=3)
-            if abs(tv) < 1e-9:
-                lab = "$0"
-            elif tv >= 10:
-                lab = f"${tv:.0f}{ysuf}"
+            # Drop the names of tiny MIDDLE-layer nodes (the first/last layers --
+            # the named entities like countries and medals -- always keep theirs).
+            is_mid = 0 < layer_idx < n_layers - 1 and node != yaxis_node
+            if is_mid and h < _min_label_h:
+                continue
+
+            if layer_idx == 0 and _l0_side == 'right':
+                # First-layer names on the RIGHT of the node (clears a left-side axis).
+                reqs.append(dict(x=x + node_width + 0.18, y=y + h / 2, ha='left',
+                                 va='center', t=name_txt, fs=font_size))
+            elif layer_idx == 0 and _l0_side == 'edge':
+                reqs.append(dict(x=x - 0.12, y=y + h, ha='right', va='center',
+                                 t=name_txt, fs=font_size))
+            elif node == yaxis_node:
+                # Node with the value axis: name goes on top to free the left side.
+                reqs.append(dict(x=x + node_width / 2, y=y + h + 0.18, ha='center',
+                                 va='bottom', t=name_txt, fs=font_size))
+            elif layer_idx == 0:
+                reqs.append(dict(x=x - 0.18, y=y + h / 2, ha='right', va='center',
+                                 t=name_txt, fs=font_size))
+            elif layer_idx == n_layers - 1:
+                reqs.append(dict(x=x + node_width + 0.18, y=y + h / 2, ha='left',
+                                 va='center', t=name_txt, fs=font_size))
             else:
-                lab = f"${tv:.1f}{ysuf}"
-            ax.text(axis_x - 0.11, ty, lab, color=label_color, fontsize=font_size - 3,
-                    alpha=0.55, ha='right', va='center', zorder=3)
-            tv += step
+                reqs.append(dict(x=x + node_width / 2, y=y + h + 0.18, ha='center',
+                                 va='bottom', t=name_txt, fs=font_size - 1))
+        label_reqs[layer_idx] = reqs
+
+    # De-collision: within each layer (a vertical column of labels), push any that
+    # are closer than ~one line-height apart, then re-centre the cluster so the
+    # group barely moves. Labels stay readable instead of intersecting.
+    _line = 0.30 * (font_size / 11.0)
+    for reqs in label_reqs.values():
+        if len(reqs) > 1:
+            reqs.sort(key=lambda r: r['y'])
+            ys = [r['y'] for r in reqs]
+            for i in range(1, len(ys)):
+                if ys[i] - ys[i - 1] < _line:
+                    ys[i] = ys[i - 1] + _line
+            shift = (sum(r['y'] for r in reqs) - sum(ys)) / len(ys)
+            for r, ny in zip(reqs, ys):
+                r['y'] = ny + shift
+        for r in reqs:
+            ax.text(r['x'], r['y'], r['t'], ha=r['ha'], va=r['va'],
+                    fontsize=r['fs'], fontweight='bold', color=label_color, bbox=name_bbox)
+
+    # Dynamic value Y-axis: a discreet "$" ruler scaled to the TOTAL of the layer
+    # that `yaxis_node` belongs to (so it reads as the overall scale, not a single
+    # node). For a single-node layer this is just that node, as before.
+    if yaxis_node and yaxis_node in node_positions_rect:
+        layer_of = next((L for L in layers if yaxis_node in L), [yaxis_node])
+        members = [n for n in layer_of if n in node_positions_rect]
+        yval = sum(frame_data.node_values.get(n, 0) for n in members)   # layer total
+        if members and yval > 0:
+            anchor = max(members, key=lambda n: frame_data.node_values.get(n, 0))
+            ax_, ayb, ah = node_positions_rect[anchor]
+            av = frame_data.node_values.get(anchor, 0)
+            scale_px = (ah / av) if av > 0 else 0.0                     # data units per $ (uniform when stacked)
+            yx = node_positions_rect[yaxis_node][0]
+            yyb = min(node_positions_rect[n][1] for n in members)       # bottom of the stack
+            yh = yval * scale_px
+            ysuf = cfg.get('yaxis_suffix', '')
+            raw = yval / 4.0
+            mag = 10 ** np.floor(np.log10(raw)) if raw > 0 else 1.0
+            step = next((m * mag for m in (1, 2, 2.5, 5, 10) if raw <= m * mag), 10 * mag)
+            axis_x = yx - cfg.get('yaxis_gap', 0.14)
+            ax.plot([axis_x, axis_x], [yyb, yyb + yh],
+                    color=label_color, lw=1.0, alpha=0.40, zorder=3)
+            tv = 0.0
+            while tv <= yval + 1e-9:
+                ty = yyb + tv * scale_px
+                ax.plot([axis_x - 0.07, axis_x], [ty, ty],
+                        color=label_color, lw=1.0, alpha=0.40, zorder=3)
+                _vp = cfg.get('value_prefix', '$')
+                if abs(tv) < 1e-9:
+                    lab = f"{_vp}0"
+                elif tv >= 10:
+                    lab = f"{_vp}{tv:.0f}{ysuf}"
+                else:
+                    lab = f"{_vp}{tv:.1f}{ysuf}"
+                ax.text(axis_x - 0.11, ty, lab, color=label_color, fontsize=font_size - 3,
+                        alpha=0.55, ha='right', va='center', zorder=3)
+                tv += step
 
     # Bar-chart-race style overlay (footer): mini area chart + discreet big number
     overlay_series = cfg.get('overlay_series')
@@ -754,10 +826,12 @@ def _draw_frame(ax, frame_data, cfg):
         n_ov = len(overlay_series)
         footer_top = plot_height * margin_bottom_ratio
 
-        # Aligned horizontally with the Sankey (from first layer to the last node)
+        # Aligned horizontally with the Sankey: from the first layer to the RIGHT
+        # corner of the arrival layer (its nodes' right edge, not just their x).
         bx0 = layer_x_positions[0]
-        bx1 = layer_x_positions[n_layers - 1]
-        by0, by1 = footer_top * 0.34, footer_top * 0.80
+        bx1 = layer_x_positions[n_layers - 1] + node_width
+        _ob = cfg.get('overlay_band', (0.34, 0.80))          # (bottom, top) as fractions of the footer
+        by0, by1 = footer_top * _ob[0], footer_top * _ob[1]
 
         p = max(0.0, min(frame_data.progress, n_ov - 1))
         k = int(np.floor(p))
@@ -790,7 +864,8 @@ def _draw_frame(ax, frame_data, cfg):
         if ov_label:
             ax.text(bx0, by1 + footer_top * 0.16, ov_label, color=label_color,
                     fontsize=font_size - 2, alpha=0.6, va='bottom', ha='left')
-        ytop = (f"${smax:.0f}{ov_suffix}" if smax >= 10 else f"${smax:.1f}{ov_suffix}")
+        _vp = cfg.get('value_prefix', '$')
+        ytop = (f"{_vp}{smax:.0f}{ov_suffix}" if smax >= 10 else f"{_vp}{smax:.1f}{ov_suffix}")
         ax.text(bx0 - plot_width * 0.006, by1, ytop, color=ov_color,
                 fontsize=font_size - 3, alpha=0.5, va='center', ha='right')
 
@@ -810,7 +885,7 @@ def _draw_frame(ax, frame_data, cfg):
 
         # Big number anchoring the bottom-right corner + optional badge
         title_fontsize = cfg.get('title_fontsize', 18)
-        big = (f"${cur_val:.0f}{ov_suffix}" if cur_val >= 10 else f"${cur_val:.1f}{ov_suffix}")
+        big = (f"{_vp}{cur_val:.0f}{ov_suffix}" if cur_val >= 10 else f"{_vp}{cur_val:.1f}{ov_suffix}")
         ax.text(plot_width * 0.985, footer_top * 0.42, big,
                 color=ov_color, fontsize=title_fontsize * 2.4, fontweight='bold',
                 alpha=0.26, ha='right', va='center', zorder=4)
@@ -827,7 +902,9 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
                               link_alpha=0.7, link_glow=0,
                               padding=1.2, yaxis_node=None, yaxis_suffix="",
                               node_corner_radius=0.05, node_pad=0.02,
-                              node_edge_width=1.5, label_plate_alpha=0.7):
+                              node_edge_width=1.5, label_plate_alpha=0.7,
+                              yaxis_gap=0.14, layer0_label_side='left',
+                              value_prefix='$'):
     """
     Render a single high-quality Sankey frame onto ``ax`` (no title).
 
@@ -889,6 +966,9 @@ def render_frame_high_quality(ax, frame_data, layers, node_colors,
         'node_pad': node_pad,
         'node_edge_width': node_edge_width,
         'label_plate_alpha': label_plate_alpha,
+        'yaxis_gap': yaxis_gap,
+        'layer0_label_side': layer0_label_side,
+        'value_prefix': value_prefix,
         'yaxis_node': yaxis_node,
         'yaxis_suffix': yaxis_suffix,
         '_t0': t0, '_t1': t1, '_t_mid': t_mid, '_f0': f0, '_f1': f1,
@@ -967,7 +1047,7 @@ def _render_chunk(args):
     canvas_width, canvas_height = fig.canvas.get_width_height()
 
     ffmpeg_cmd = [
-        'ffmpeg', '-y',
+        'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-nostats',
         '-f', 'rawvideo',
         '-vcodec', 'rawvideo',
         '-s', f'{canvas_width}x{canvas_height}',
@@ -983,11 +1063,17 @@ def _render_chunk(args):
 
     def _pipe_frames():
         """Spawn FFmpeg, draw + pipe every frame once. Raises on pipe/encode error."""
+        # FFmpeg's log output on stderr would fill the OS pipe buffer (~64 KB on
+        # Linux) part-way through a long render and deadlock against our stdin
+        # writes — ffmpeg blocks on stderr, we block on stdin, nobody moves.
+        # Route stderr to a temp file (never blocks, read on demand) and discard
+        # stdout. Windows pipes are roomier, which is why this only bit on Linux/CI.
+        err_log = tempfile.TemporaryFile()
         process = subprocess.Popen(
             ffmpeg_cmd,
             stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=err_log,
         )
         try:
             for frame_data in frames_data:
@@ -1005,8 +1091,23 @@ def _render_chunk(args):
                 ax.text(plot_width / 2, plot_height * 0.95,
                         f"{display_title}\n{frame_data.time_label}" if display_title else frame_data.time_label,
                         ha='center', va='top', fontsize=title_fontsize, fontweight='bold',
-                        color=title_text_color,
+                        color=title_text_color, parse_math=False,   # '$' is literal (e.g. "R$ bi"), not mathtext
                         bbox=dict(boxstyle='round,pad=0.3', facecolor=title_bg_color, alpha=title_bg_alpha))
+
+                # Beat annotation: a caption that appears while the chart sits on a
+                # specific period (e.g. "1980 — Moscow boycott"). Position is configurable
+                # (annotation_xy as plot fractions + ha/va) so callers can park it in
+                # whatever corner is empty -- by default the dead space under the title.
+                _annot = draw_cfg.get('annotations', {}).get(str(frame_data.time_label))
+                if _annot:
+                    _axx, _axy = draw_cfg.get('annotation_xy', (0.5, 0.845))
+                    ax.text(plot_width * _axx, plot_height * _axy, _annot,
+                            ha=draw_cfg.get('annotation_ha', 'center'),
+                            va=draw_cfg.get('annotation_va', 'top'),
+                            fontsize=title_fontsize * 0.8, linespacing=1.4,
+                            color='#FFE8A3', parse_math=False, zorder=20,
+                            bbox=dict(boxstyle='round,pad=0.5', facecolor='#000000',
+                                      alpha=0.6, edgecolor='#FFD24A', linewidth=0.8))
 
                 fig.canvas.draw()
                 buf = fig.canvas.buffer_rgba()
@@ -1015,8 +1116,10 @@ def _render_chunk(args):
                 process.stdin.write(rgb_array.tobytes())
 
             process.stdin.close()
-            _stdout, stderr = process.communicate(timeout=300)
+            process.wait(timeout=300)
             if process.returncode != 0:
+                err_log.seek(0)
+                stderr = err_log.read()
                 raise RuntimeError(
                     f"FFmpeg failed for chunk {chunk_id} (exit {process.returncode}):\n"
                     f"{stderr.decode(errors='ignore')[-800:]}"
@@ -1032,6 +1135,8 @@ def _render_chunk(args):
             except Exception:
                 pass
             raise
+        finally:
+            err_log.close()
 
     # Retry transient failures (e.g. a broken FFmpeg pipe -> OSError under heavy
     # system load) by re-spawning FFmpeg and re-rendering the chunk from scratch.
@@ -1097,6 +1202,24 @@ class SankeyRaceMultiLayerParallel:
             self._rgb_cache[node] = get_rgb_cached(color)
 
         self._global_max_cache = None
+
+        # Synchronized-ranking grouping (opt-in via set_group_parents); empty by
+        # default so every existing reel ranks each layer independently as before.
+        self.child_parent = {}
+        self.group_demote = set()
+
+    def set_group_parents(self, child_parent: Dict[str, str], demote=None):
+        """Link a layer's nodes to a parent on the layer to their left, so in
+        stacked+ranking mode that layer is ordered to FOLLOW the parents' ranking
+        (each parent's children stay grouped under it as the parents race).
+
+        ``child_parent``: {child_node -> parent_node}. ``demote``: optional set of
+        nodes (e.g. per-group "… other" buckets) to sort last within their group.
+        Call before ``animate``/``save_frame``. See _compute_stacked_ranking_positions.
+        """
+        self.child_parent = dict(child_parent or {})
+        self.group_demote = set(demote or ())
+        return self
 
     @classmethod
     def from_dataframe(cls,
@@ -1360,11 +1483,33 @@ class SankeyRaceMultiLayerParallel:
                 factor = (max(0.0, node_values[node]) / gmax) ** 0.5
                 colors[node] = scale_brightness(base, factor)
 
+        # An aggregate bucket named exactly "Others" keeps its fixed neutral colour
+        # under every dynamic mode — it is pinned, not ranked, so it must not flash a
+        # rank/value hue (mirrors the pin-last positioning rule).
+        # `fixed_color_nodes` extends this: any node the caller marks as fixed keeps its
+        # base node_colors hue (e.g. Gold/Silver/Bronze sinks stay metallic while the
+        # source nodes rank-recolour), so the two columns don't share one ramp.
+        _fixed = getattr(self, "fixed_color_nodes", None) or set()
+        for _n in list(colors):
+            if (_is_aggregate_node(_n) or _n in _fixed) and _n in self.node_colors:
+                colors[_n] = self.node_colors[_n]
+
         return colors
 
     def _compute_stacked_ranking_positions(self, node_values, plot_height, bar_height_ratio,
                                            margin_top_ratio, margin_bottom_ratio, gap, ascending):
-        """Compute Y positions in stacked + ranking mode."""
+        """Compute Y positions in stacked + ranking mode.
+
+        SYNCHRONIZED RANKING (opt-in via ``self.child_parent``): when a node is
+        mapped to a parent on the layer to its left, its layer is ordered to FOLLOW
+        the parent's ranking — each parent's children stay contiguous and appear in
+        the parent's rank position (e.g. each nation's sport nodes ride along under
+        the nation as the nations race). A wider gap separates groups than the nodes
+        within one, so the blocks read. A zero-value parent's children collapse to
+        height 0 and leave no blank slot. ``self.group_demote`` nodes (e.g. a per-
+        group "… other" bucket) sort last within their group. Empty mapping ->
+        identical to the original independent-per-layer behavior.
+        """
         margin_top = plot_height * margin_top_ratio
         margin_bottom = plot_height * margin_bottom_ratio
         usable_height = plot_height - margin_top - margin_bottom
@@ -1373,25 +1518,97 @@ class SankeyRaceMultiLayerParallel:
                         for layer_nodes in self.layers]
         max_layer_total = max(layer_totals) if layer_totals else 1
         stacked_height = usable_height * bar_height_ratio
-        scale = stacked_height / max_layer_total if max_layer_total > 0 else 1
 
-        positions = {}
+        parent_of = getattr(self, "child_parent", None) or {}
+        demote = getattr(self, "group_demote", None) or set()
+        group_gap = gap * 2.2                       # wider channel BETWEEN groups
+        # When a layer is grouped (synchronized ranking), the base gap is kept tight
+        # to fit the dense child layer -- but that would also cram the SPARSE non-
+        # grouped layers (e.g. the country/medal columns). Give those a much wider
+        # gap so they spread into the empty space; the dense layer still binds the
+        # scale, so this costs no bar height.
+        solo_gap = gap * 4.0 if parent_of else gap
+
+        # Rank every node within its own layer; children look up their parent's rank.
+        rank_of = {}
+        for lyr in self.layers:
+            for r, n in enumerate(sorted(lyr, key=lambda n: node_values.get(n, 0),
+                                         reverse=not ascending)):
+                rank_of[n] = r
+
+        # --- pass 1: per-layer order + leading-gap pattern (independent of scale) ---
+        plans = []                                  # (sorted_nodes, gaps, value_total, gap_total)
         for layer_nodes in self.layers:
-            n_nodes = len(layer_nodes)
-            if n_nodes == 0:
+            if not layer_nodes:
                 continue
+            grouped = any(n in parent_of for n in layer_nodes)
+            if grouped:
+                def _key(n):
+                    parent = parent_of.get(n)
+                    if parent is None:              # stray node w/o parent -> bottom
+                        return (1, 10 ** 9, 1, 0.0, str(n))
+                    collapsed = 0 if node_values.get(parent, 0) > 1e-9 else 1
+                    is_other = 1 if (n in demote or _is_aggregate_node(n)) else 0
+                    own = node_values.get(n, 0)
+                    return (collapsed, rank_of.get(parent, 10 ** 9), is_other,
+                            own if ascending else -own, str(n))
+                sorted_nodes = sorted(layer_nodes, key=_key)
+            else:
+                sorted_nodes = sorted(layer_nodes, key=lambda n: node_values.get(n, 0),
+                                      reverse=not ascending)
+                # A node named "Others" is an aggregate bucket: pin it to the bottom
+                # of its layer so it never jumps around in the ranking race.
+                sorted_nodes = ([n for n in sorted_nodes if not _is_aggregate_node(n)]
+                                + [n for n in sorted_nodes if _is_aggregate_node(n)])
 
-            sorted_nodes = sorted(layer_nodes, key=lambda n: node_values.get(n, 0), reverse=not ascending)
-            heights = [max(node_values.get(node, 0) * scale, 0.1) for node in sorted_nodes]
-            total_height = sum(heights) + gap * (n_nodes - 1) if n_nodes > 1 else sum(heights)
+            # Leading gap before each visible node: wider when the group changes.
+            gaps = [0.0] * len(sorted_nodes)
+            prev_parent, first = None, True
+            for i, node in enumerate(sorted_nodes):
+                if node_values.get(node, 0) <= 1e-9:   # zero-value nodes vanish (no gap)
+                    continue
+                if not first:
+                    p = parent_of.get(node)
+                    if grouped:
+                        gaps[i] = group_gap if p != prev_parent else gap
+                    else:
+                        gaps[i] = solo_gap     # spread the sparse country/medal column
+                first = False
+                prev_parent = parent_of.get(node)
+            vtot = sum(node_values.get(n, 0) for n in sorted_nodes)
+            plans.append((sorted_nodes, gaps, vtot, sum(gaps)))
+
+        # --- gap-aware scale: bars + gaps must FIT usable_height in EVERY layer, so a
+        #     gap-heavy layer (e.g. grouped sport nodes with wide inter-group gaps)
+        #     can't overflow upward into the title. Never exceed the nominal bar scale.
+        scale = stacked_height / max_layer_total if max_layer_total > 0 else 1.0
+        for _, _, vtot, gtot in plans:
+            if vtot > 0:
+                scale = min(scale, max(0.0, usable_height - gtot) / vtot)
+
+        # --- pass 2: stack each layer top-down, centered, with that single scale ---
+        # Reserve a top band for the title: middle-layer node NAMES are drawn just
+        # ABOVE their node, so the topmost bar's label must not reach the title. We
+        # clamp the stack top to `top_cap` (and the small height floor keeps tiny
+        # nodes from inflating the stack much past the gap-aware budget).
+        top_cap = (plot_height - margin_top) - 0.55
+        positions = {}
+        for sorted_nodes, gaps, vtot, gtot in plans:
+            heights = [max(node_values.get(n, 0) * scale, 0.05) if node_values.get(n, 0) > 1e-9 else 0.0
+                       for n in sorted_nodes]
+            total_height = sum(heights) + sum(gaps)
             start_y = margin_bottom + (usable_height - total_height) / 2 + total_height
+            start_y = min(start_y, top_cap)         # never let the top bar (+its label) hit the title
 
             current_y = start_y
             for i, node in enumerate(sorted_nodes):
                 h = heights[i]
+                if h <= 0:
+                    positions[node] = current_y      # parked; this node won't render
+                    continue
+                current_y -= gaps[i]
                 current_y -= h
                 positions[node] = current_y + h / 2
-                current_y -= gap
 
         return positions
 
@@ -1401,16 +1618,30 @@ class SankeyRaceMultiLayerParallel:
                            dynamic_color_mode: Union[DynamicColorMode, str] = DynamicColorMode.STATIC,
                            dynamic_colormap: Union[ColorPalette, str, List[str]] = 'RdYlGn',
                            node_value_labels_per_frame: Optional[List[Dict[str, str]]] = None,
-                           fixed_layer_max: Optional[float] = None):
+                           fixed_layer_max: Optional[float] = None,
+                           hold_periods: Optional[Dict[str, int]] = None):
         """Pre-compute every interpolated frame.
 
         Args:
             mode: 'stacked_ranking', 'ranking', 'stacked', or 'fixed'.
             dynamic_color_mode: Dynamic node coloring mode.
             dynamic_colormap: Colormap for dynamic colors.
+            hold_periods: {time_label: n_frames} -> pause on those data-frames by
+                inserting static frames (so annotated "beats" linger). Budgeted out of
+                total_frames so the clip length is preserved.
         """
         n_data_frames = len(self.frames)
-        frames_per_period = max(1, total_frames // max(1, n_data_frames))
+        # How many extra static frames each data-period should hold for (matched by label).
+        hold_by_idx = {}
+        if hold_periods:
+            for _i, _f in enumerate(self.frames):
+                _h = hold_periods.get(str(_f['time_label']))
+                if _h:
+                    hold_by_idx[_i] = int(_h)
+        total_hold = sum(hold_by_idx.values())
+        n_transitions = max(1, n_data_frames - 1)
+        # Reserve the hold budget so total length stays ~ total_frames.
+        frames_per_period = max(1, (total_frames - total_hold) // n_transitions)
 
         if isinstance(dynamic_color_mode, str):
             dynamic_color_mode = DynamicColorMode(dynamic_color_mode.lower())
@@ -1525,6 +1756,24 @@ class SankeyRaceMultiLayerParallel:
                     progress=i + t
                 ))
 
+            # Pause on a "beat" year: repeat the destination period's settled state so
+            # an annotation can linger (and the eye can read the ranking) before moving on.
+            hold_n = hold_by_idx.get(i + 1, 0)
+            if hold_n:
+                hold_links_b = [(s, d, v) for (s, d), v in links_b.items() if v > 1e-9]
+                hold_labels = (node_value_labels_per_frame[i + 1]
+                               if node_value_labels_per_frame else None)
+                for _ in range(hold_n):
+                    interpolated.append(FrameData(
+                        time_label=frame_b['time_label'],
+                        links=hold_links_b,
+                        node_positions=pos_b,
+                        node_values=values_b,
+                        node_colors=colors_b,
+                        node_value_labels=hold_labels,
+                        progress=float(i + 1),
+                    ))
+
         # Hold frames at the end
         last_frame, last_values, last_pos, last_colors = data_info[-1]
         last_labels = node_value_labels_per_frame[-1] if node_value_labels_per_frame else None
@@ -1581,12 +1830,22 @@ class SankeyRaceMultiLayerParallel:
                 overlay_value_suffix: str = "",
                 overlay_x_labels: Optional[List[str]] = None,
                 overlay_badge: str = "",
+                overlay_band: tuple = (0.34, 0.80),
                 audio_path: str = None,
                 audio_url: str = None,
                 audio_start: float = 0.0,
                 audio_fade: float = 1.5,
                 yaxis_node: str = None,
-                yaxis_suffix: str = ""):
+                yaxis_suffix: str = "",
+                yaxis_gap: float = 0.14,
+                layer0_label_side: str = "left",
+                value_prefix: str = "$",
+                fixed_color_nodes: Optional[set] = None,
+                annotations: Optional[Dict[str, str]] = None,
+                hold_periods: Optional[Dict[str, int]] = None,
+                annotation_xy: tuple = (0.5, 0.845),
+                annotation_ha: str = "center",
+                annotation_va: str = "top"):
         """
         Render the animation using multiple parallel worker processes.
 
@@ -1717,6 +1976,10 @@ class SankeyRaceMultiLayerParallel:
         if dynamic_color_mode_enum != DynamicColorMode.STATIC:
             print(f"  - Colormap: {dynamic_colormap}")
 
+        # Nodes whose colour must never be rank/value-recoloured (read in
+        # _compute_dynamic_colors), e.g. metallic Gold/Silver/Bronze medal sinks.
+        self.fixed_color_nodes = set(fixed_color_nodes) if fixed_color_nodes else set()
+
         # Pre-compute frames
         print(f"\nPre-computing {total_frames} frames...")
         t0 = time.time()
@@ -1727,7 +1990,8 @@ class SankeyRaceMultiLayerParallel:
             dynamic_color_mode=dynamic_color_mode_enum,
             dynamic_colormap=dynamic_colormap,
             node_value_labels_per_frame=node_value_labels_per_frame,
-            fixed_layer_max=fixed_layer_max
+            fixed_layer_max=fixed_layer_max,
+            hold_periods=hold_periods,
         )
         print(f"  Pre-computation: {time.time() - t0:.2f}s")
 
@@ -1781,13 +2045,21 @@ class SankeyRaceMultiLayerParallel:
             'node_pad': _theme.node.pad,
             'node_edge_width': _theme.node.edge_width,
             'label_plate_alpha': _theme.node.label_plate_alpha,
+            'yaxis_gap': yaxis_gap,
+            'layer0_label_side': layer0_label_side,
+            'value_prefix': value_prefix,
             'fixed_layer_max': fixed_layer_max,
+            'annotations': annotations or {},
+            'annotation_xy': annotation_xy,
+            'annotation_ha': annotation_ha,
+            'annotation_va': annotation_va,
             'overlay_series': overlay_series,
             'overlay_label': overlay_label,
             'overlay_color': overlay_color,
             'overlay_value_suffix': overlay_value_suffix,
             'overlay_x_labels': overlay_x_labels,
             'overlay_badge': overlay_badge,
+            'overlay_band': overlay_band,
             'yaxis_node': yaxis_node,
             'yaxis_suffix': yaxis_suffix,
         }
@@ -1904,7 +2176,10 @@ class SankeyRaceMultiLayerParallel:
                    link_glow: int = 0,
                    node_value_labels: Dict[str, str] = None,
                    yaxis_node: str = None,
-                   yaxis_suffix: str = ""):
+                   yaxis_suffix: str = "",
+                   yaxis_gap: float = 0.14,
+                   layer0_label_side: str = "left",
+                   value_prefix: str = "$"):
         """
         Save a single frame as a static image (PNG, PDF, SVG).
 
@@ -2010,6 +2285,8 @@ class SankeyRaceMultiLayerParallel:
             node_corner_radius=_theme.node.corner_radius, node_pad=_theme.node.pad,
             node_edge_width=_theme.node.edge_width,
             label_plate_alpha=_theme.node.label_plate_alpha,
+            yaxis_gap=yaxis_gap, layer0_label_side=layer0_label_side,
+            value_prefix=value_prefix,
         )
 
         if title:
@@ -2018,7 +2295,7 @@ class SankeyRaceMultiLayerParallel:
             ax.text(
                 plot_width / 2, plot_height * 0.98, full_title,
                 fontsize=title_fontsize, ha='center', va='top',
-                fontweight='bold', color=title_text_color,
+                fontweight='bold', color=title_text_color, parse_math=False,
                 bbox=dict(boxstyle='round,pad=0.4', facecolor=title_bg_color,
                           alpha=title_bg_alpha, edgecolor='none')
             )
